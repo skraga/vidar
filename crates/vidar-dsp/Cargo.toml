@@ -1,0 +1,9 @@
+[package]
+name = "vidar-dsp"
+description = "Vidar signal chain: high-pass, adaptive gate, transient suppressor, leveler, limiter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]

@@ -1,0 +1,18 @@
+# Build output
+/target/
+
+# Downloaded by `cargo xtask fetch` (large binaries, checked by SHA-256)
+/third_party/rnnoise/model/
+/third_party/onnxruntime/
+/models/
+
+# Python environment for the benchmark tool
+/.venv/
+__pycache__/
+
+# Editors and OS
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+.DS_Store

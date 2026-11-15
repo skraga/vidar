@@ -1,0 +1,16 @@
+[package]
+name = "vidar-config"
+description = "Vidar settings: load, save, and engine parameters derived from them"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+vidar-dsp.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"

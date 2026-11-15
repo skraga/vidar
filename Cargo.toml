@@ -1,0 +1,39 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/vidar-dsp",
+    "crates/vidar-denoise",
+    "crates/vidar-config",
+    "crates/vidar-win",
+    "crates/vidar-audio",
+    "crates/vidar-brand",
+    "apps/vidar-cli",
+    "apps/vidar",
+    "xtask",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.85"
+
+[workspace.dependencies]
+vidar-dsp = { path = "crates/vidar-dsp" }
+vidar-denoise = { path = "crates/vidar-denoise" }
+vidar-config = { path = "crates/vidar-config" }
+vidar-win = { path = "crates/vidar-win" }
+vidar-audio = { path = "crates/vidar-audio" }
+vidar-brand = { path = "crates/vidar-brand" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "unwind"
+debug = "line-tables-only"
+
+# DSP code is slow and inaccurate to step through unoptimised; keep tests fast.
+[profile.dev.package."*"]
+opt-level = 2
+[profile.test]
+opt-level = 2

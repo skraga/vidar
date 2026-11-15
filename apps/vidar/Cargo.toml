@@ -1,0 +1,36 @@
+[package]
+name = "vidar"
+description = "Vidar - real-time AI noise cancellation for Windows"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "vidar"
+path = "src/main.rs"
+
+[dependencies]
+vidar-audio.workspace = true
+vidar-brand.workspace = true
+vidar-config.workspace = true
+vidar-denoise.workspace = true
+vidar-dsp.workspace = true
+vidar-win.workspace = true
+eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts"] }
+tray-icon = "0.26"
+log = "0.4"
+raw-window-handle = "0.6"
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[build-dependencies]
+vidar-brand.workspace = true
+winresource = "0.1"

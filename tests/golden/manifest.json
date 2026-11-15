@@ -1,0 +1,98 @@
+{
+  "sample_rate": 48000,
+  "frame": 480,
+  "clips": [
+    "clean_david",
+    "fan_david",
+    "keys_zira",
+    "hiss_silence",
+    "loud_zira"
+  ],
+  "configs": {
+    "engine_rnnoise": {
+      "model": "rnnoise",
+      "gate": "engine",
+      "music": false,
+      "hpf": true,
+      "leveler": false,
+      "boost_db": 0.0,
+      "gain": 1.08
+    },
+    "engine_bypass": {
+      "model": null,
+      "gate": "engine",
+      "music": false,
+      "hpf": true,
+      "leveler": false,
+      "boost_db": 0.0,
+      "gain": 1.08
+    },
+    "engine_music": {
+      "model": null,
+      "gate": "engine",
+      "music": true,
+      "hpf": true,
+      "leveler": false,
+      "boost_db": 0.0,
+      "gain": 1.08
+    },
+    "engine_autolevel": {
+      "model": "rnnoise",
+      "gate": "engine",
+      "music": false,
+      "hpf": true,
+      "leveler": true,
+      "boost_db": 0.0,
+      "gain": 1.08
+    },
+    "engine_boost5": {
+      "model": "rnnoise",
+      "gate": "engine",
+      "music": false,
+      "hpf": true,
+      "leveler": true,
+      "boost_db": 5.0,
+      "gain": 1.9205417628420367
+    },
+    "engine_nohpf": {
+      "model": "rnnoise",
+      "gate": "engine",
+      "music": false,
+      "hpf": false,
+      "leveler": false,
+      "boost_db": 0.0,
+      "gain": 1.08
+    },
+    "cli_rnnoise": {
+      "model": "rnnoise",
+      "gate": "cli",
+      "music": false,
+      "hpf": true,
+      "leveler": false,
+      "boost_db": 0.0,
+      "gain": 1.0
+    },
+    "engine_dpdfnet_rnnvad": {
+      "model": "dpdfnet:rnnoise",
+      "gate": "engine",
+      "music": false,
+      "hpf": true,
+      "leveler": false,
+      "boost_db": 0.0,
+      "gain": 1.08
+    },
+    "engine_dpdfnet_spectral": {
+      "model": "dpdfnet:spectral",
+      "gate": "engine",
+      "music": false,
+      "hpf": true,
+      "leveler": false,
+      "boost_db": 0.0,
+      "gain": 1.08
+    }
+  },
+  "full_output": [
+    "engine_bypass/keys_zira",
+    "engine_rnnoise/fan_david"
+  ]
+}

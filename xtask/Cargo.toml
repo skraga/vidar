@@ -1,0 +1,13 @@
+[package]
+name = "xtask"
+description = "Vidar build tasks: fetch models, package releases"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+
+[dependencies]
+ureq = "3"
+sha2 = "0.11"
+flate2 = "1"
+tar = "0.4"
+zip = { version = "9", default-features = false, features = ["deflate"] }

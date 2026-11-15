@@ -1,0 +1,10 @@
+[package]
+name = "vidar-brand"
+description = "Vidar icon drawn in code (tray, window, .ico)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+png = "0.18"

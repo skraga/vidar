@@ -1,0 +1,25 @@
+[package]
+name = "vidar-denoise"
+description = "Neural noise suppressors for Vidar: RNNoise (compiled in) and DPDFNet (ONNX)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+build = "build.rs"
+links = "rnnoise"
+
+[features]
+default = ["dpdfnet"]
+dpdfnet = ["dep:ort", "dep:realfft"]
+
+[dependencies]
+vidar-dsp.workspace = true
+thiserror = "2"
+realfft = { version = "3.5", optional = true }
+ort = { version = "=2.0.0-rc.15", optional = true, default-features = false, features = ["std", "load-dynamic", "api-31"] }
+
+[build-dependencies]
+cc = "1.2"
+
+[dev-dependencies]
+hound = "3.5"
