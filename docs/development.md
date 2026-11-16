@@ -87,7 +87,7 @@ Options for `--clean`:
 
 | Option | Effect |
 |---|---|
-| `--engine rnnoise\|dpdfnet` | Model (default `rnnoise`) |
+| `--engine rnnoise\|dpdfnet` | Model (default `dpdfnet`, falling back to `rnnoise` if it cannot load) |
 | `--dpdfnet-vad rnnoise\|spectral` | Speech detector for DPDFNet (default `rnnoise`) |
 | `--dpdfnet-model dpdfnet2_48khz_hr\|dpdfnet8_48khz_hr` | DPDFNet variant |
 | `--models-dir <dir>` | Folder with the DPDFNet `.onnx` files (default: next to the program) |

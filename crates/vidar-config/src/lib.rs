@@ -60,7 +60,8 @@ pub struct Config {
     pub mic_boost_db: f64,
     pub auto_level: bool,
 
-    /// `"rnnoise"` (Voice) or `"dpdfnet"` (Voice HD).
+    /// `"dpdfnet"` (Voice HD, the default) or `"rnnoise"` (Voice). Anything else reads as
+    /// `"rnnoise"`, which is always available.
     pub denoise_engine: String,
 
     /// True while the Windows default mic is switched to the cable (crash recovery).
@@ -92,7 +93,7 @@ impl Default for Config {
             vad_threshold: 0.70,
             mic_boost_db: 0.0,
             auto_level: false,
-            denoise_engine: "rnnoise".into(),
+            denoise_engine: "dpdfnet".into(),
             is_swapped: false,
             original_mic_id: None,
             cable_capture_id: None,
@@ -143,18 +144,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn defaults_are_the_tuned_values() {
+    fn defaults_are_the_recommended_settings() {
         let c = Config::default();
-        assert_eq!(
-            (c.vad_threshold, c.vad_close_threshold, c.vad_hangover_ms),
-            (0.70, 0.52, 320.0)
-        );
-        assert_eq!(
-            (c.vad_onset_threshold, c.vad_onset_snr_db, c.vad_floor_gain),
-            (0.35, 10.0, 0.06)
-        );
-        assert_eq!((c.output_gain, c.hpf_cutoff_hz), (1.08, 80.0));
-        assert!(c.auto_route && c.high_pass_filter);
+        assert_eq!(c.vad_threshold, 0.70);
+        assert_eq!(c.mic_boost_db, 0.0);
+        assert!(!c.auto_level && !c.raw_capture);
+        assert_eq!(c.denoise_engine, "dpdfnet");
+    }
+
+    #[test]
+    fn retired_keys_are_dropped_from_old_files() {
+        let json = r#"{"version":"2.0.0","vad_threshold":0.82,"high_pass_filter":false,
+            "auto_route":false,"low_latency":false,"vad_hangover_ms":900.0,
+            "dpdfnet_vad":"spectral","something_new":1}"#;
+        let mut c: Config = serde_json::from_str(json).unwrap();
+        c.sanitize();
+        for key in RETIRED_KEYS {
+            assert!(!c.extra.contains_key(key), "{key} kept");
+        }
+        // Settings that still exist and unknown keys survive.
+        assert_eq!(c.vad_threshold, 0.82);
+        assert_eq!(c.extra["something_new"], 1);
     }
 
     #[test]
@@ -170,8 +180,6 @@ mod tests {
     fn sanitize_fixes_bad_values() {
         let mut c = Config {
             denoise_engine: "DPDFNet".into(),
-            dpdfnet_vad: "nope".into(),
-            dpdfnet_model: "x".into(),
             vad_threshold: f64::NAN,
             mic_boost_db: -5.0,
             input_endpoint_id: Some("  ".into()),
@@ -179,8 +187,6 @@ mod tests {
         };
         c.sanitize();
         assert_eq!(c.denoise_engine, "dpdfnet");
-        assert_eq!(c.dpdfnet_vad, "rnnoise");
-        assert_eq!(c.dpdfnet_model, "dpdfnet2_48khz_hr");
         assert_eq!(c.vad_threshold, 0.70);
         assert_eq!(c.mic_boost_db, 0.0);
         assert_eq!(c.input_endpoint_id, None);

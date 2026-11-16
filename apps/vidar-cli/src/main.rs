@@ -63,8 +63,8 @@ struct Cli {
     /// Skip the neural noise model (filter and gate only)
     #[arg(long = "no-rnnoise", alias = "no-model")]
     no_model: bool,
-    /// Neural noise model
-    #[arg(long, value_enum, default_value = "rnnoise")]
+    /// Neural noise model (falls back to rnnoise if DPDFNet cannot load)
+    #[arg(long, value_enum, default_value = "dpdfnet")]
     engine: EngineArg,
     /// DPDFNet speech detector
     #[arg(long = "dpdfnet-vad", value_enum, default_value = "rnnoise")]

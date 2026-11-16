@@ -74,10 +74,26 @@ mod tests {
         assert_eq!(s.gate.threshold, 0.70);
         assert_eq!(s.gate.close_threshold, 0.52);
         assert_eq!(s.gate.hangover_ms, 320.0);
+        assert_eq!(s.gate.decay_ms, 80.0);
+        assert_eq!(s.gate.onset_threshold, 0.35);
+        assert_eq!(s.gate.onset_snr_db, 10.0);
         assert_eq!(s.gate.floor_gain, 0.06);
         assert!(s.gate.lookahead);
         assert!((s.total_gain - 1.08).abs() < 1e-12);
         assert!(s.denoise_enabled);
+        assert!(s.high_pass);
+        assert_eq!(s.hpf_cutoff_hz, 80.0);
+    }
+
+    #[test]
+    fn close_threshold_follows_strength() {
+        let cfg = Config {
+            vad_threshold: 0.82,
+            ..Config::default()
+        };
+        let s = EngineSettings::from_config(&cfg, false);
+        assert_eq!(s.gate.threshold, 0.82);
+        assert_eq!(s.gate.close_threshold, close_threshold_for(0.82));
     }
 
     #[test]

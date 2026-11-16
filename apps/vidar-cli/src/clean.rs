@@ -140,7 +140,7 @@ pub fn clean_file(
         .collect();
     let mut models: Vec<Box<dyn Denoiser>> = Vec::new();
     if use_model {
-        let spec = DenoiseSpec {
+        let mut spec = DenoiseSpec {
             engine: opt.engine,
             dpdfnet_vad: opt.dpdfnet_vad.clone(),
             dpdfnet_model: opt.dpdfnet_model.clone(),
@@ -148,12 +148,19 @@ pub fn clean_file(
             dpdfnet_attn_limit_db: opt.attn_limit_db,
         };
         for _ in 0..channels {
-            match create(&spec) {
+            let mut made = create(&spec);
+            // Like the app: if DPDFNet (Voice HD, the default) cannot load, use RNNoise.
+            if let (Err(e), true) = (&made, models.is_empty() && spec.engine != Engine::RnNoise) {
+                eprintln!("[WARN] {} unavailable ({e}); using RNNoise.", spec.engine.label());
+                spec.engine = Engine::RnNoise;
+                made = create(&spec);
+            }
+            match made {
                 Ok(m) => models.push(m),
                 Err(e) => {
                     eprintln!(
                         "[WARN] {} unavailable ({e}); continuing without a noise model.",
-                        opt.engine.label()
+                        spec.engine.label()
                     );
                     use_model = false;
                     models.clear();

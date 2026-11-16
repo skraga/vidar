@@ -94,9 +94,11 @@ def word_edges(ref, est, sr):
     er = (ref[: n * hop].astype(np.float64).reshape(n, hop) ** 2).sum(1)
     ee = (est[: n * hop].astype(np.float64).reshape(n, hop) ** 2).sum(1)
     lr = _db(er)
-    act = lr > np.percentile(lr, 95) - 30
-    # Only runs of at least 50 ms count as speech; single loud frames of the reference's own
-    # noise floor (VoiceBank's clean takes have one) are not words.
+    # Speech: within 30 dB of the loud frames and at least 15 dB above the reference's own noise
+    # floor (VoiceBank's "clean" takes have one, only ~25 dB down for some speakers; a model
+    # that removes it must not count as cutting words).
+    act = lr > max(np.percentile(lr, 95) - 30, np.percentile(lr, 10) + 15)
+    # Only runs of at least 50 ms count as speech.
     edges = np.flatnonzero(np.diff(np.r_[0, act.astype(np.int8), 0]))
     for s, e in zip(edges[::2], edges[1::2]):
         if e - s < 5:

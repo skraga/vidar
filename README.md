@@ -65,11 +65,12 @@ Two modes, from most to least noise removal:
 everything else, even while you talk. It handles loud fans, traffic, echoing rooms and people
 talking nearby best, and your voice sounds the most natural. The price is about 60 ms of delay
 and roughly five times the processor work of Voice. Use it for calls, meetings and recordings.
+This is the default.
 
 **2. Voice: nearly as clean, much lighter.** A small AI model (RNNoise) does the same job.
 In loud or echoing rooms a little more noise stays under your voice. It has about 30 ms of
 delay and barely touches the processor. Use it for gaming, on laptops, or when you hear
-yourself back. This is the default.
+yourself back.
 
 | | Voice HD | Voice |
 |---|---|---|
@@ -106,7 +107,7 @@ The same processing is available for recordings:
 
 ```
 vidar-cli --clean interview.m4a                       # writes interview_cleaned.wav
-vidar-cli --clean podcast/ podcast-clean/ --engine dpdfnet
+vidar-cli --clean podcast/ podcast-clean/ --engine rnnoise   # Voice instead of Voice HD
 ```
 
 ## Documentation
