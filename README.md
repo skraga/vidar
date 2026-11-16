@@ -7,6 +7,15 @@
 <p align="center"><b>Real-time AI noise cancellation for Windows.</b><br/>
 Offline, on your own CPU. No account, no cloud.</p>
 
+<p align="center">
+  <a href="https://github.com/skraga/vidar/releases/latest"><img src="https://img.shields.io/github/v/release/skraga/vidar?include_prereleases&sort=semver&label=release&color=4c8bf5" alt="Latest release" /></a>
+  <a href="https://github.com/skraga/vidar/releases"><img src="https://img.shields.io/github/downloads/skraga/vidar/total?color=4c8bf5" alt="Downloads" /></a>
+  <a href="https://github.com/skraga/vidar/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/skraga/vidar/ci.yml?branch=main&label=CI" alt="CI status" /></a>
+  <img src="https://img.shields.io/badge/Windows-10%20%7C%2011-0078D6?logo=windows&logoColor=white" alt="Windows 10 | 11" />
+  <img src="https://img.shields.io/badge/Rust-1.95%2B-CE422B?logo=rust&logoColor=white" alt="Rust 1.95+" />
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT licence" /></a>
+</p>
+
 ---
 
 Vidar removes fans, keyboards, room noise and background voices from your microphone before
