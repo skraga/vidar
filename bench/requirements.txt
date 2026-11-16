@@ -1,6 +1,11 @@
+# Core: data sets, PESQ/STOI/SI-SDR/LSD, DNSMOS, noise-only test, MUSHRA export.
 numpy
 scipy
 soundfile
 pesq
 pystoi
 onnxruntime
+librosa      # DNSMOS P.808 features
+pyloudnorm   # MUSHRA loudness matching, EARS-WHAM generator
+remotezip    # fetch.py: WHAM! test noise without the 73 GB archive
+tqdm

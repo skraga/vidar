@@ -53,6 +53,9 @@ pub struct GateParams {
     pub calibrate_startup: bool,
     pub sustain_snr_db: f64,
     pub sustain_threshold: f64,
+    /// Track the level after the noise model instead of the input level (experimental;
+    /// `vidar-cli --gate-level output`). Read by [`crate::process_mono_frame`].
+    pub level_after_model: bool,
 }
 
 impl Default for GateParams {
@@ -73,6 +76,7 @@ impl Default for GateParams {
             calibrate_startup: true,
             sustain_snr_db: 6.0,
             sustain_threshold: 0.25,
+            level_after_model: false,
         }
     }
 }
@@ -161,6 +165,7 @@ pub struct AdaptiveGate {
     cooldown_frames: u64,
     max_cooldown_frames: u64,
     calibrate_startup: bool,
+    level_after_model: bool,
 
     // State.
     noise_floor_db: f64,
@@ -208,6 +213,7 @@ impl AdaptiveGate {
             cooldown_frames,
             max_cooldown_frames: cooldown_frames.max((p.flutter_cooldown_ms / p.frame_ms) as u64),
             calibrate_startup: p.calibrate_startup,
+            level_after_model: p.level_after_model,
 
             noise_floor_db: FLOOR_INIT_DB,
             frames_since_close: IDLE_FRAMES,
@@ -233,6 +239,11 @@ impl AdaptiveGate {
             anchor_scratch: [0.0; ANCHOR_CAPACITY],
             s_curve: s_curve_table(),
         }
+    }
+
+    /// Whether the chain should give this gate the level after the noise model.
+    pub fn level_after_model(&self) -> bool {
+        self.level_after_model
     }
 
     pub fn is_open(&self) -> bool {

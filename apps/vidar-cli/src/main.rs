@@ -30,6 +30,12 @@ enum VadArg {
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
+enum GateLevelArg {
+    Input,
+    Output,
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
 #[allow(non_camel_case_types)]
 enum ModelArg {
     #[value(name = "dpdfnet2_48khz_hr")]
@@ -76,6 +82,15 @@ struct Cli {
     /// Skip the adaptive noise gate
     #[arg(long = "no-gate")]
     no_gate: bool,
+    /// Skip the click suppressor after the noise model
+    #[arg(long = "no-declick")]
+    no_declick: bool,
+    /// Level the gate tracks: the input, or the output of the noise model (experimental)
+    #[arg(long = "gate-level", value_enum, default_value = "input")]
+    gate_level: GateLevelArg,
+    /// Voice HD: most the model may turn anything down, in dB (default: no limit)
+    #[arg(long = "attn-limit-db", value_name = "DB")]
+    attn_limit_db: Option<f64>,
     /// Level quiet speech automatically
     #[arg(long = "auto-level")]
     auto_level: bool,
@@ -154,6 +169,9 @@ fn main() -> ExitCode {
     let opts = CleanOptions {
         no_model: cli.no_model,
         no_gate: cli.no_gate,
+        no_declick: cli.no_declick,
+        gate_level_after_model: matches!(cli.gate_level, GateLevelArg::Output),
+        attn_limit_db: cli.attn_limit_db,
         auto_level: cli.auto_level,
         gain_db: cli.gain,
         stereo: cli.stereo,

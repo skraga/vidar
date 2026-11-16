@@ -11,7 +11,29 @@ pub use store::{default_path, load, save, LoadOutcome};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-pub const CONFIG_VERSION: &str = "2.0.0";
+pub const CONFIG_VERSION: &str = "2.1.0";
+
+/// Keys earlier versions wrote that are now fixed in code. Dropped on load, so a settings
+/// file from an older version cannot pin old tuning values.
+const RETIRED_KEYS: [&str; 17] = [
+    "auto_route",
+    "output_endpoint_id",
+    "output_device_name",
+    "start_minimized",
+    "low_latency",
+    "high_pass_filter",
+    "hpf_cutoff_hz",
+    "output_gain",
+    "vad_close_threshold",
+    "vad_hangover_ms",
+    "vad_decay_ms",
+    "vad_onset_threshold",
+    "vad_onset_snr_db",
+    "vad_floor_gain",
+    "vad_customized",
+    "dpdfnet_vad",
+    "dpdfnet_model",
+];
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -31,34 +53,20 @@ pub struct Config {
     pub input_endpoint_id: Option<String>,
     /// Friendly name of the chosen microphone, used to find it again if its ID changes.
     pub input_device_name: Option<String>,
-    /// Endpoint ID of the playback device audio is sent to (normally the cable's render side).
-    pub output_endpoint_id: Option<String>,
-    pub output_device_name: Option<String>,
 
-    pub high_pass_filter: bool,
-    pub hpf_cutoff_hz: f64,
+    /// Strength: the gate's open threshold. The close threshold follows it
+    /// ([`close_threshold_for`]); every other gate value is fixed in [`EngineSettings`].
     pub vad_threshold: f64,
-    pub vad_close_threshold: f64,
-    pub vad_hangover_ms: f64,
-    pub vad_decay_ms: f64,
-    pub vad_onset_threshold: f64,
-    pub vad_onset_snr_db: f64,
-    pub vad_floor_gain: f64,
-    /// Set when the user moves the sensitivity slider; stops migrations touching VAD values.
-    pub vad_customized: bool,
-    pub output_gain: f64,
     pub mic_boost_db: f64,
     pub auto_level: bool,
 
+    /// `"rnnoise"` (Voice) or `"dpdfnet"` (Voice HD).
     pub denoise_engine: String,
-    pub dpdfnet_vad: String,
-    pub dpdfnet_model: String,
 
     /// True while the Windows default mic is switched to the cable (crash recovery).
     pub is_swapped: bool,
     /// Endpoint ID of the user's own default mic before Vidar switched it.
     pub original_mic_id: Option<String>,
-    pub auto_route: bool,
 
     /// Endpoint IDs of the virtual cable, remembered so it is found even after renaming.
     pub cable_capture_id: Option<String>,
@@ -66,10 +74,7 @@ pub struct Config {
 
     /// Ask Windows for the mic signal without vendor "enhancements".
     pub raw_capture: bool,
-    /// Use the smallest shared-mode period the device allows.
-    pub low_latency: bool,
     pub start_with_windows: bool,
-    pub start_minimized: bool,
     /// Window theme: "auto" (follow Windows), "light" or "dark".
     pub ui_theme: String,
 
@@ -84,33 +89,16 @@ impl Default for Config {
             version: CONFIG_VERSION.into(),
             input_endpoint_id: None,
             input_device_name: None,
-            output_endpoint_id: None,
-            output_device_name: None,
-            high_pass_filter: true,
-            hpf_cutoff_hz: 80.0,
             vad_threshold: 0.70,
-            vad_close_threshold: 0.52,
-            vad_hangover_ms: 320.0,
-            vad_decay_ms: 80.0,
-            vad_onset_threshold: 0.35,
-            vad_onset_snr_db: 10.0,
-            vad_floor_gain: 0.06,
-            vad_customized: false,
-            output_gain: 1.08,
             mic_boost_db: 0.0,
             auto_level: false,
             denoise_engine: "rnnoise".into(),
-            dpdfnet_vad: "rnnoise".into(),
-            dpdfnet_model: "dpdfnet2_48khz_hr".into(),
             is_swapped: false,
             original_mic_id: None,
-            auto_route: true,
             cable_capture_id: None,
             cable_render_id: None,
             raw_capture: false,
-            low_latency: true,
             start_with_windows: false,
-            start_minimized: false,
             ui_theme: "auto".into(),
             extra: Map::new(),
         }
@@ -126,36 +114,15 @@ impl Config {
         } else {
             "rnnoise".into()
         };
-        let vad = self.dpdfnet_vad.trim().to_ascii_lowercase();
-        self.dpdfnet_vad = if vad == "spectral" {
-            vad
-        } else {
-            "rnnoise".into()
-        };
         if !matches!(self.ui_theme.as_str(), "auto" | "light" | "dark") {
             self.ui_theme = "auto".into();
         }
-        if !matches!(
-            self.dpdfnet_model.as_str(),
-            "dpdfnet2_48khz_hr" | "dpdfnet8_48khz_hr"
-        ) {
-            self.dpdfnet_model = "dpdfnet2_48khz_hr".into();
-        }
         self.vad_threshold = finite_or(self.vad_threshold, 0.70).clamp(0.05, 0.99);
-        self.vad_close_threshold = finite_or(self.vad_close_threshold, 0.52).clamp(0.05, 0.99);
-        self.vad_onset_threshold = finite_or(self.vad_onset_threshold, 0.35).clamp(0.0, 1.0);
-        self.vad_floor_gain = finite_or(self.vad_floor_gain, 0.06).clamp(0.0, 1.0);
-        self.vad_hangover_ms = finite_or(self.vad_hangover_ms, 320.0).clamp(10.0, 5000.0);
-        self.vad_decay_ms = finite_or(self.vad_decay_ms, 80.0).clamp(1.0, 5000.0);
-        self.hpf_cutoff_hz = finite_or(self.hpf_cutoff_hz, 80.0).clamp(20.0, 400.0);
-        self.output_gain = finite_or(self.output_gain, 1.08).clamp(0.1, 8.0);
         self.mic_boost_db = finite_or(self.mic_boost_db, 0.0).clamp(0.0, 30.0);
-        self.vad_onset_snr_db = finite_or(self.vad_onset_snr_db, 10.0);
-        for id in [
-            &mut self.input_endpoint_id,
-            &mut self.output_endpoint_id,
-            &mut self.original_mic_id,
-        ] {
+        for key in RETIRED_KEYS {
+            self.extra.remove(key);
+        }
+        for id in [&mut self.input_endpoint_id, &mut self.original_mic_id] {
             if id.as_deref().is_some_and(|s| s.trim().is_empty()) {
                 *id = None;
             }

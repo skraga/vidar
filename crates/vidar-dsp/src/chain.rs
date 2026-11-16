@@ -19,6 +19,9 @@ pub struct FrameStats {
 /// high-pass → metering and soft pre-clip → neural model (or a level-based probability
 /// when bypassed) → transient suppression → optional leveler → gain → adaptive gate →
 /// soft limiter.
+///
+/// Sets flush-to-zero on the calling thread first (see [`crate::flush_denormals`]), so the
+/// live engine, the voice test and the CLI all run the models without subnormal slowdowns.
 #[allow(clippy::too_many_arguments)]
 pub fn process_mono_frame(
     frame: &mut Frame,
@@ -30,6 +33,7 @@ pub fn process_mono_frame(
     transient: Option<&mut TransientSuppressor>,
     mic_boost_db: f64,
 ) -> FrameStats {
+    crate::flush_denormals();
     if let Some(h) = hpf {
         h.process(frame);
     }
@@ -41,6 +45,7 @@ pub fn process_mono_frame(
     }
 
     let mut level_db = input.rms_db;
+    let mut gate_level_db = None;
     let speech_prob = match denoiser {
         Some(d) => {
             for x in frame.iter_mut() {
@@ -51,6 +56,10 @@ pub fn process_mono_frame(
                 *x /= PCM_SCALE;
             }
             level_db = d.align_level(input.rms_db);
+            if gate.level_after_model() {
+                // Already lined up with the audio: it is measured on the model's output.
+                gate_level_db = Some(levels(frame).rms_db);
+            }
             p
         }
         None => ((input.rms_db + 45.0) / 20.0).clamp(0.0, 1.0),
@@ -67,7 +76,7 @@ pub fn process_mono_frame(
         frame.iter_mut().for_each(|x| *x *= g);
     }
 
-    let gate_gain = gate.process(frame, speech_prob, Some(level_db));
+    let gate_gain = gate.process(frame, speech_prob, Some(gate_level_db.unwrap_or(level_db)));
     soft_limit(frame, 0.85);
 
     FrameStats {

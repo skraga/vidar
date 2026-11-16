@@ -352,17 +352,14 @@ fn primary_tip(ui: &mut egui::Ui, p: &Pal, text: &str, width: f32, tip: Tip) -> 
 
 const TIP_MIC: Tip = ("Microphone", "The microphone Vidar listens to. \"Windows default microphone\" follows whatever is selected in Windows Sound settings. Bluetooth headsets sound narrower while their microphone is in use.");
 const TIP_AUTO_LEVEL: Tip = ("Auto level", "Slowly makes quiet speech louder, by up to 9 dB. It never makes loud speech louder and holds still while you are silent, so background noise is not raised. Turn it on if people say you are too quiet.");
-const TIP_RUMBLE: Tip = ("Rumble filter", "Removes deep sounds below 80 Hz that voices do not need: fan and engine rumble, hum, desk bumps. Leave it on unless you have a very deep voice that sounds thin.");
 const TIP_FINE: Tip = ("Fine-tune strength", "The same setting as Strength on the Home tab, in finer steps. Further right, Vidar must be more sure you are talking before it turns your microphone back up between words: less noise slips through, but very soft words may be cut. Further left keeps every word but lets more noise through in pauses.");
 const TIP_LEVEL: Tip = ("How loud apps hear you", "Your voice after Vidar, as apps receive it. Talk normally for a few seconds. Aim for the green zone: in the grey zone people may struggle to hear you, in the red zone you may sound harsh or distorted. The white mark is where your speech usually sits.");
 const TIP_RESET: Tip = ("Reset to recommended", "Boost off, Auto level off, Rumble filter on, strength Balanced.");
-const TIP_ROUTE: Tip = ("Use Vidar AI Microphone as the default", "While noise cancellation is on, Windows uses Vidar AI Microphone as its default microphone, so apps set to \"Default\" get your clean voice without any setup. Your own microphone comes back when you turn Vidar off, quit or shut down. Turn this off if you prefer to pick Vidar AI Microphone in each app yourself.");
 const TIP_AUTOSTART: Tip = (
     "Start with Windows",
     "Starts Vidar in the tray when you sign in. Noise cancellation stays off until you turn it on.",
 );
 const TIP_RAW: Tip = ("Raw microphone signal", "Gives Vidar your microphone before Windows and the microphone's driver apply their own effects, such as built-in noise suppression or automatic volume. Usually sounds more natural with Vidar; turn it off if your microphone sounds worse. Audio restarts briefly if Vidar is on.");
-const TIP_LATENCY: Tip = ("Low latency", "Passes audio along in the smallest steps your devices allow, saving a few milliseconds of delay. Turn it off if you hear crackles or dropouts.");
 const TIP_INSTALL: Tip = ("Virtual microphone", "Vidar AI Microphone runs on the free VB-Audio Virtual Cable driver. Installing it asks Windows for permission once; your speakers and microphone stay as they are.");
 const TIP_REINSTALL: Tip = ("Reinstall", "Installs the VB-Audio driver again. Use it if Vidar AI Microphone stopped working, for example after a Windows update.");
 const TIP_UNINSTALL: Tip = ("Uninstall", "Turns Vidar off, gives your own microphone back to Windows and removes the VB-Audio driver. Apps that were set to Vidar AI Microphone switch to another microphone. Windows may ask to restart.");
@@ -2152,22 +2149,11 @@ impl VidarWindow {
             ) {
                 self.handle.send(Cmd::SetAutoLevel(!v.auto_level));
             }
-            if switch_row(
-                ui,
-                p,
-                "Rumble filter",
-                "Removes rumble, hum and desk bumps; best left on",
-                v.hpf,
-                TIP_RUMBLE,
-            ) {
-                self.handle.send(Cmd::SetHighPass(!v.hpf));
-            }
             ui.add_space(4.0);
             self.fine_strength(ui, p, v);
 
             let recommended = v.mic_boost_db.abs() < 0.5
                 && !v.auto_level
-                && v.hpf
                 && (v.vad_threshold - 0.70).abs() < 0.005;
             if !recommended {
                 ui.add_space(2.0);
@@ -2180,9 +2166,6 @@ impl VidarWindow {
                     if v.auto_level {
                         self.handle.send(Cmd::SetAutoLevel(false));
                     }
-                    if !v.hpf {
-                        self.handle.send(Cmd::SetHighPass(true));
-                    }
                     self.handle.send(Cmd::SetVad(0.70));
                 }
             }
@@ -2191,19 +2174,6 @@ impl VidarWindow {
 
         card(ui, p, |ui| {
             section(ui, p, "Apps and Windows");
-            let running = v.state != RunState::Stopped;
-            ui.add_enabled_ui(!running, |ui| {
-                if switch_row(
-                    ui,
-                    p,
-                    "Use Vidar AI Microphone as the default",
-                    "Apps set to Default switch over by themselves",
-                    v.auto_route,
-                    TIP_ROUTE,
-                ) {
-                    self.handle.send(Cmd::SetAutoRoute(!v.auto_route));
-                }
-            });
             if switch_row(
                 ui,
                 p,
@@ -2287,16 +2257,6 @@ impl VidarWindow {
                 TIP_RAW,
             ) {
                 self.handle.send(Cmd::SetRawCapture(!v.raw_capture));
-            }
-            if switch_row(
-                ui,
-                p,
-                "Low latency",
-                "Saves a few ms of delay",
-                v.low_latency,
-                TIP_LATENCY,
-            ) {
-                self.handle.send(Cmd::SetLowLatency(!v.low_latency));
             }
             ui.add_space(4.0);
             ui.horizontal(|ui| {

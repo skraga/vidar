@@ -8,6 +8,7 @@
 
 mod bands;
 mod chain;
+mod denormals;
 mod gate;
 mod hpf;
 mod leveler;
@@ -17,6 +18,7 @@ mod transient;
 
 pub use bands::{VoiceBands, BANDS, BAND_CENTRES_HZ};
 pub use chain::{process_mono_frame, FrameStats};
+pub use denormals::flush_denormals;
 pub use gate::{AdaptiveGate, GateParams};
 pub use hpf::HighPass;
 pub use leveler::SpeechLeveler;

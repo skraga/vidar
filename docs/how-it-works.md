@@ -200,7 +200,8 @@ and dropouts.
 | Audio buffers (capture + ring + render) | ~10 ms | ~10 ms |
 | **Total** | **~30 ms** | **~60 ms** |
 
-*Low latency* in Settings (on by default) asks Windows for the smallest buffer the devices
-allow. Turn it off if you hear crackles. *Raw microphone signal* (off by default) asks Windows
+Vidar always asks Windows for the smallest buffer the devices allow, and falls back to the
+regular shared-mode stream when a device cannot provide it (a format other than 48 kHz float,
+a driver without the newer Windows audio interface, or a Bluetooth headset). *Raw microphone signal* (off by default) asks Windows
 to skip the microphone driver's own effects, such as built-in noise suppression or automatic
 volume, which can work against Vidar's processing.

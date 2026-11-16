@@ -178,9 +178,6 @@ impl SpectralDetector {
 
 pub struct DpdfNet {
     model: Box<dyn SpecModel>,
-    init_state: Vec<f32>,
-    state: Vec<f32>,
-    state_next: Vec<f32>,
 
     window: [f32; WIN_LEN],
     in_buf: [f32; WIN_LEN],
@@ -195,8 +192,6 @@ pub struct DpdfNet {
     time_out: Vec<f64>,
     fft_scratch: Vec<Complex<f64>>,
     ifft_scratch: Vec<Complex<f64>>,
-    model_in: Vec<f32>,
-    model_out: Vec<f32>,
 
     vad_rnnoise: Option<RnNoise>,
     spectral: Option<SpectralDetector>,
@@ -207,18 +202,19 @@ pub struct DpdfNet {
     prob_delay: FrameDelay,
     level_delay: FrameDelay,
     delay_samples: usize,
+    /// Share of the noisy spectrum mixed back in (attenuation limit); 0 = off.
+    attn_alpha: f64,
 }
 
 impl DpdfNet {
     /// Load `model` (e.g. `"dpdfnet2_48khz_hr"`) from `path` and build the streaming state.
     pub fn load(path: &Path, model_name: &str, vad: Vad) -> Result<Self, Error> {
-        let (model, init_state) = crate::onnx::load(path)?;
-        Self::with_model(model, init_state, model_name, vad)
+        let model = crate::onnx::load(path)?;
+        Self::with_model(model, model_name, vad)
     }
 
     pub fn with_model(
         model: Box<dyn SpecModel>,
-        init_state: Vec<f32>,
         model_name: &str,
         vad: Vad,
     ) -> Result<Self, Error> {
@@ -231,12 +227,8 @@ impl DpdfNet {
         let fft_scratch = fft.make_scratch_vec();
         let ifft_scratch = ifft.make_scratch_vec();
 
-        let state_len = init_state.len();
         Ok(Self {
             model,
-            state: init_state.clone(),
-            state_next: vec![0.0; state_len],
-            init_state,
             window: vorbis_window(),
             in_buf: [0.0; WIN_LEN],
             ola: [0.0; WIN_LEN],
@@ -249,8 +241,6 @@ impl DpdfNet {
             ifft,
             fft_scratch,
             ifft_scratch,
-            model_in: vec![0.0; FREQ_BINS * 2],
-            model_out: vec![0.0; FREQ_BINS * 2],
             vad_rnnoise: if vad == Vad::RnNoise {
                 Some(RnNoise::new()?)
             } else {
@@ -267,7 +257,21 @@ impl DpdfNet {
             prob_delay: FrameDelay::new(align, 0.0),
             level_delay: FrameDelay::new(align, -100.0),
             delay_samples: FRAME_SIZE * (1 + k),
+            attn_alpha: 0.0,
         })
+    }
+}
+
+impl DpdfNet {
+    /// Limit how far the model may turn anything down, as upstream's `attn_limit_db`:
+    /// `out = a * noisy + (1 - a) * enhanced` per bin, `a = 10^(-dB/20)`, with the noisy
+    /// spectrum taken from the frame the output belongs to (k frames back). `None` or
+    /// infinity disables it.
+    pub fn set_attn_limit_db(&mut self, db: Option<f64>) {
+        self.attn_alpha = match db {
+            Some(d) if d.is_finite() && d >= 0.0 => 10f64.powf(-d / 20.0),
+            _ => 0.0,
+        };
     }
 }
 
@@ -294,31 +298,28 @@ impl Denoiser for DpdfNet {
         {
             return 0.0;
         }
-        for (i, c) in self.spec_in.iter().enumerate() {
-            self.model_in[2 * i] = c.re as f32;
-            self.model_in[2 * i + 1] = c.im as f32;
+        // Input spectra of the last k + 1 frames: the output of this frame belongs to the
+        // oldest of them (the model's internal look-ahead).
+        let cap = self.spec_hist.len();
+        self.spec_hist[self.hist_pos].copy_from_slice(&self.spec_in);
+        self.hist_pos = (self.hist_pos + 1) % cap;
+        self.hist_len = (self.hist_len + 1).min(cap);
+        let full = self.hist_len == cap;
+        let oldest = if full { self.hist_pos } else { 0 };
+
+        for (dst, c) in self.model.spec_in().chunks_exact_mut(2).zip(&self.spec_in) {
+            dst[0] = c.re as f32;
+            dst[1] = c.im as f32;
         }
 
-        if self
-            .model
-            .run(
-                &self.model_in,
-                &self.state,
-                &mut self.model_out,
-                &mut self.state_next,
-            )
-            .is_err()
-        {
-            // Keep the stream alive: pass the input through for this frame.
-            return 0.0;
-        }
-        std::mem::swap(&mut self.state, &mut self.state_next);
-
-        for (i, c) in self.spec_out.iter_mut().enumerate() {
-            *c = Complex::new(
-                f64::from(self.model_out[2 * i]),
-                f64::from(self.model_out[2 * i + 1]),
-            );
+        if self.model.step().is_ok() {
+            for (c, src) in self.spec_out.iter_mut().zip(self.model.spec_out().chunks_exact(2)) {
+                *c = Complex::new(f64::from(src[0]), f64::from(src[1]));
+            }
+        } else {
+            // Keep the stream alive and in time: this hop contributes silence, so the
+            // overlap-add fades out the previous frame instead of jumping to raw input.
+            self.spec_out.fill(Complex::new(0.0, 0.0));
         }
         // A real signal has no imaginary part at DC and Nyquist; drop any the model emits.
         self.spec_out[0].im = 0.0;
@@ -326,6 +327,17 @@ impl Denoiser for DpdfNet {
         // The inverse FFT uses its input as scratch, so keep a copy for the detector.
         if self.spectral.is_some() {
             self.spec_out_vad.copy_from_slice(&self.spec_out);
+        }
+        // Attenuation limit, after the detector's copy so that it still sees what the
+        // model kept. Until the history is full the aligned input is silence, as upstream.
+        if self.attn_alpha > 0.0 && full {
+            let a = self.attn_alpha;
+            for (o, n) in self.spec_out.iter_mut().zip(&self.spec_hist[oldest]) {
+                *o = *n * a + *o * (1.0 - a);
+            }
+        } else if self.attn_alpha > 0.0 {
+            let a = 1.0 - self.attn_alpha;
+            self.spec_out.iter_mut().for_each(|o| *o *= a);
         }
         if self
             .ifft
@@ -351,19 +363,8 @@ impl Denoiser for DpdfNet {
         self.ola[FRAME_SIZE..].fill(0.0);
 
         match self.spectral.as_mut() {
-            Some(det) => {
-                // Output frame t holds the input from k frames ago; compare like with like.
-                let cap = self.spec_hist.len();
-                self.spec_hist[self.hist_pos].copy_from_slice(&self.spec_in);
-                self.hist_pos = (self.hist_pos + 1) % cap;
-                self.hist_len = (self.hist_len + 1).min(cap);
-                let oldest = if self.hist_len < cap {
-                    0
-                } else {
-                    self.hist_pos
-                };
-                det.update(&self.spec_hist[oldest], &self.spec_out_vad)
-            }
+            // Output frame t holds the input from k frames ago; compare like with like.
+            Some(det) => det.update(&self.spec_hist[oldest], &self.spec_out_vad),
             None => self.prob_delay.push(prob_now),
         }
     }
@@ -377,7 +378,7 @@ impl Denoiser for DpdfNet {
     }
 
     fn reset(&mut self) {
-        self.state.copy_from_slice(&self.init_state);
+        self.model.reset();
         self.in_buf = [0.0; WIN_LEN];
         self.ola = [0.0; WIN_LEN];
         self.prob_delay.reset();
@@ -412,24 +413,35 @@ mod tests {
 
     /// Identity model: returns the spectrum unchanged, so the STFT/OLA path must
     /// reconstruct the input delayed by exactly one hop.
-    struct Identity;
+    struct Identity {
+        spec_in: Vec<f32>,
+        spec_out: Vec<f32>,
+    }
+    impl Identity {
+        fn new() -> Self {
+            Self {
+                spec_in: vec![0.0; FREQ_BINS * 2],
+                spec_out: vec![0.0; FREQ_BINS * 2],
+            }
+        }
+    }
     impl SpecModel for Identity {
-        fn run(
-            &mut self,
-            spec: &[f32],
-            state: &[f32],
-            spec_out: &mut [f32],
-            state_out: &mut [f32],
-        ) -> Result<(), Error> {
-            spec_out.copy_from_slice(spec);
-            state_out.copy_from_slice(state);
+        fn spec_in(&mut self) -> &mut [f32] {
+            &mut self.spec_in
+        }
+        fn step(&mut self) -> Result<(), Error> {
+            self.spec_out.copy_from_slice(&self.spec_in);
             Ok(())
         }
+        fn spec_out(&self) -> &[f32] {
+            &self.spec_out
+        }
+        fn reset(&mut self) {}
     }
 
     #[test]
     fn identity_model_reconstructs_input_one_hop_late() {
-        let mut d = DpdfNet::with_model(Box::new(Identity), vec![0.0; 4], "unknown", Vad::Spectral)
+        let mut d = DpdfNet::with_model(Box::new(Identity::new()), "unknown", Vad::Spectral)
             .unwrap();
         let input: Vec<f32> = (0..FRAME_SIZE * 6)
             .map(|i| ((i as f32) * 0.031).sin() * 10_000.0)

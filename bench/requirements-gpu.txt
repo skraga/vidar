@@ -1,0 +1,9 @@
+# Neural scores (NISQA, SQUIM, optional UTMOS) and Whisper word error rate.
+# Install torch first with the CUDA build for your card, e.g.:
+#   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128
+# then: pip install -r bench/requirements-gpu.txt
+torch>=2.4
+torchaudio>=2.4
+torchmetrics[audio]>=1.7   # NISQA v2
+openai-whisper
+jiwer

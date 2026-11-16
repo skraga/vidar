@@ -2,18 +2,65 @@
 //!
 //!     cargo run --release -p vidar-denoise --example bench [clip.wav]
 //!
-//! Prints the cost of each model as a share of one CPU core in real time (10 ms frames).
+//! Prints the cost of each model as a share of one CPU core in real time (10 ms frames),
+//! then the cost during digital silence after speech, with and without flush-to-zero:
+//! that is where decaying model state turns subnormal and slows down.
 
 use std::path::Path;
 use std::time::Instant;
 
 use vidar_denoise::{create, DenoiseSpec, Engine};
 use vidar_dsp::{
-    process_mono_frame, AdaptiveGate, Frame, GateParams, HighPass, SpeechLeveler,
+    flush_denormals, process_mono_frame, AdaptiveGate, Frame, GateParams, HighPass, SpeechLeveler,
     TransientSuppressor, FRAME_SIZE, PCM_SCALE,
 };
 
+/// Frame times in microseconds over speech followed by `silence` frames of digital silence;
+/// returns (mean, p99, max) over the silent part only.
+fn silence_tail(spec: &DenoiseSpec, speech: &[Frame], silence: usize, ftz: bool) -> Option<(f64, f64, f64)> {
+    let spec = spec.clone();
+    let speech = speech.to_vec();
+    std::thread::spawn(move || {
+        if ftz {
+            flush_denormals();
+        }
+        let mut model = create(&spec).ok()?;
+        for f in &speech {
+            model.process_frame(&mut f.clone());
+        }
+        let mut t: Vec<f64> = (0..silence)
+            .map(|_| {
+                let mut f = [0.0f32; FRAME_SIZE];
+                let s = Instant::now();
+                model.process_frame(&mut f);
+                s.elapsed().as_secs_f64() * 1e6
+            })
+            .collect();
+        let mean = t.iter().sum::<f64>() / t.len() as f64;
+        t.sort_by(f64::total_cmp);
+        Some((mean, t[t.len() * 99 / 100], t[t.len() - 1]))
+    })
+    .join()
+    .ok()?
+}
+
+/// Sorted per-frame times in microseconds over three passes of `frames`.
+fn frame_times(model: &mut dyn vidar_dsp::Denoiser, frames: &[Frame]) -> Vec<f64> {
+    let mut t = Vec::with_capacity(frames.len() * 3);
+    for _ in 0..3 {
+        for f in frames {
+            let mut f = *f;
+            let s = Instant::now();
+            model.process_frame(&mut f);
+            t.push(s.elapsed().as_secs_f64() * 1e6);
+        }
+    }
+    t.sort_by(f64::total_cmp);
+    t
+}
+
 fn main() {
+    flush_denormals();
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let clip = std::env::args()
         .nth(1)
@@ -75,6 +122,7 @@ fn main() {
         ),
         ("DPDFNet + spectral VAD", Engine::DpdfNet, "spectral"),
     ];
+    let mut tails = Vec::new();
     for (name, engine, vad) in cases {
         let spec = DenoiseSpec {
             engine,
@@ -107,5 +155,39 @@ fn main() {
             best / audio_secs * 100.0,
             best / frames.len() as f64 * 1e6
         );
+        tails.push((name, frame_times(&mut *model, &model_frames)));
+    }
+
+    // A real-time callback has 10 ms per frame: the slow frames matter, not the average.
+    println!("\nPer-frame time over speech, 3 passes (us: median / p99 / p99.9 / max, frames over 10 ms)");
+    for (name, t) in &tails {
+        let pct = |p: f64| t[((t.len() - 1) as f64 * p) as usize];
+        println!(
+            "{name:<34} {:>7.1} / {:>7.1} / {:>7.1} / {:>7.1}   {}",
+            pct(0.5),
+            pct(0.99),
+            pct(0.999),
+            t[t.len() - 1],
+            t.iter().filter(|&&x| x > 10_000.0).count()
+        );
+    }
+
+    println!("
+Digital silence after speech, 10 s (us/frame: mean / p99 / max)");
+    for (name, engine, vad) in cases {
+        let spec = DenoiseSpec {
+            engine,
+            dpdfnet_vad: vad.into(),
+            model_dirs: vec![root.join("models")],
+            ..DenoiseSpec::default()
+        };
+        for ftz in [false, true] {
+            if let Some((mean, p99, max)) = silence_tail(&spec, &model_frames, 1000, ftz) {
+                println!(
+                    "{name:<34} {:<8} {mean:>7.1} / {p99:>7.1} / {max:>7.1}",
+                    if ftz { "FTZ on" } else { "FTZ off" }
+                );
+            }
+        }
     }
 }

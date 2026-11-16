@@ -173,7 +173,6 @@ pub struct View {
     pub selected_input: Option<String>,
     pub mic_boost_db: f64,
     pub vad_threshold: f64,
-    pub auto_route: bool,
     pub engine: String,
     pub active_model: Option<&'static str>,
     pub muted: bool,
@@ -185,9 +184,7 @@ pub struct View {
     pub test: TestView,
     pub auto_level: bool,
     pub raw_capture: bool,
-    pub low_latency: bool,
     pub ui_theme: String,
-    pub hpf: bool,
     pub install: InstallState,
     /// The driver job in `install` removes the cable rather than installing it.
     pub uninstalling: bool,
@@ -200,7 +197,6 @@ pub enum Cmd {
     SelectInput(Option<String>),
     SetBoost(f64),
     SetVad(f64),
-    SetAutoRoute(bool),
     SetEngine(String),
     SetMute(bool),
     SetStartWithWindows(bool),
@@ -222,9 +218,7 @@ pub enum Cmd {
     StopTest,
     SetAutoLevel(bool),
     SetRawCapture(bool),
-    SetLowLatency(bool),
     SetTheme(String),
-    SetHighPass(bool),
     InstallDriver,
     /// Stop, give the microphone back and remove the virtual cable driver.
     UninstallDriver,
@@ -333,14 +327,9 @@ impl Core {
                 "Virtual cable required - install the driver".into(),
                 Tone::Warn,
             )
-        } else if self.cfg.auto_route {
-            (
-                "Ready - Vidar AI Microphone becomes the default microphone when active".into(),
-                Tone::Idle,
-            )
         } else {
             (
-                "Ready - manual routing (pick Vidar AI Microphone in your apps)".into(),
+                "Ready - Vidar AI Microphone becomes the default microphone when active".into(),
                 Tone::Idle,
             )
         }
@@ -468,9 +457,8 @@ impl Core {
     fn model_spec(&self) -> DenoiseSpec {
         DenoiseSpec {
             engine: Model::parse(&self.cfg.denoise_engine),
-            dpdfnet_vad: self.cfg.dpdfnet_vad.clone(),
-            dpdfnet_model: self.cfg.dpdfnet_model.clone(),
             model_dirs: models_dirs(),
+            ..DenoiseSpec::default()
         }
     }
 
@@ -512,7 +500,9 @@ impl Core {
             output_id: Some(cable_out.id.clone()),
             settings,
             raw_capture: self.cfg.raw_capture,
-            low_latency: self.cfg.low_latency,
+            // Always ask for the device's smallest period; the stream falls back to the
+            // regular one by itself when a device cannot do it.
+            low_latency: true,
             bluetooth_buffer: input.bus == vidar_win::Bus::BluetoothHfp,
         };
         match Engine::start(cfg, model) {
@@ -532,7 +522,9 @@ impl Core {
                     v.live = Some(live);
                 });
 
-                let routed = if self.cfg.auto_route {
+                // While active, Vidar AI Microphone is the Windows default; stop, quit and
+                // crash recovery put the user's own mic back.
+                let routed = {
                     let mut route = self.route.clone();
                     let path = self.cfg_path.clone();
                     let mut cfg = self.cfg.clone();
@@ -547,9 +539,7 @@ impl Core {
                         },
                     );
                     self.route = route;
-                    Some(r)
-                } else {
-                    None
+                    r
                 };
                 self.save_now();
                 let fallback_note = if !errors.is_empty() && active.is_some() {
@@ -562,9 +552,8 @@ impl Core {
                     String::new()
                 };
                 match routed {
-                    Some(Ok(cable)) => self.status(format!("Active - apps now hear clean audio from {}{fallback_note}", cable.name), Tone::Good),
-                    Some(Err(e)) => self.status(format!("Active, but switching the default mic failed ({e}). Pick the Vidar AI Microphone in your apps."), Tone::Warn),
-                    None => self.status(format!("Active - pick the Vidar AI Microphone in your apps{fallback_note}"), Tone::Good),
+                    Ok(cable) => self.status(format!("Active - apps now hear clean audio from {}{fallback_note}", cable.name), Tone::Good),
+                    Err(e) => self.status(format!("Active, but switching the default mic failed ({e}). Pick the Vidar AI Microphone in your apps."), Tone::Warn),
                 }
             }
             Err(e) => {
@@ -695,8 +684,6 @@ impl Core {
                 let mut cfg = self.cfg.clone();
                 cfg.denoise_engine = o.engine.into();
                 cfg.vad_threshold = o.threshold;
-                cfg.vad_close_threshold = vidar_config::close_threshold_for(o.threshold);
-                cfg.vad_customized = true;
                 let settings = EngineSettings::from_config(&cfg, input.is_laptop_mic());
                 let spec = DenoiseSpec {
                     engine: Model::parse(o.engine),
@@ -1027,27 +1014,11 @@ impl Core {
             Cmd::SetVad(t) => {
                 let t = (t * 100.0).round() / 100.0;
                 self.cfg.vad_threshold = t;
-                self.cfg.vad_close_threshold = vidar_config::close_threshold_for(t);
-                self.cfg.vad_customized = true;
                 if let Some(e) = &self.engine {
                     e.controls().set_vad_threshold(t);
                 }
                 self.save_later();
                 self.publish(|v| v.vad_threshold = t);
-            }
-            Cmd::SetAutoRoute(on) => {
-                if self.engine.is_some() {
-                    self.status(
-                        "Stop noise cancellation first to change routing",
-                        Tone::Warn,
-                    );
-                    return true;
-                }
-                self.cfg.auto_route = on;
-                self.save_now();
-                self.publish(|v| v.auto_route = on);
-                let (s, t) = self.idle_status();
-                self.status(s, t);
             }
             Cmd::SetEngine(name) => {
                 self.cfg.denoise_engine = name.clone();
@@ -1133,23 +1104,6 @@ impl Core {
                 let t = self.cfg.ui_theme.clone();
                 self.publish(|v| v.ui_theme = t);
             }
-            Cmd::SetHighPass(on) => {
-                self.cfg.high_pass_filter = on;
-                self.save_now();
-                if let Some(e) = &self.engine {
-                    e.controls().high_pass.store(on, Relaxed);
-                }
-                self.publish(|v| v.hpf = on);
-            }
-            Cmd::SetLowLatency(on) => {
-                self.cfg.low_latency = on;
-                self.save_now();
-                self.publish(|v| v.low_latency = on);
-                if self.engine.is_some() {
-                    self.stop(true);
-                    self.start();
-                }
-            }
             Cmd::InstallDriver => self.install_driver(false),
             Cmd::UninstallDriver => {
                 // The cable cannot be removed while Vidar uses it; stopping also restores the mic.
@@ -1198,7 +1152,6 @@ pub fn spawn(cfg_path: PathBuf, cfg: Config) -> (Handle, std::thread::JoinHandle
         selected_input: cfg.input_endpoint_id.clone(),
         mic_boost_db: cfg.mic_boost_db,
         vad_threshold: cfg.vad_threshold,
-        auto_route: cfg.auto_route,
         engine: cfg.denoise_engine.clone(),
         active_model: None,
         muted: false,
@@ -1208,9 +1161,7 @@ pub fn spawn(cfg_path: PathBuf, cfg: Config) -> (Handle, std::thread::JoinHandle
         test: TestView::default(),
         auto_level: cfg.auto_level,
         raw_capture: cfg.raw_capture,
-        low_latency: cfg.low_latency,
         ui_theme: cfg.ui_theme.clone(),
-        hpf: cfg.high_pass_filter,
         install: InstallState::Idle,
         uninstalling: false,
         prompt_install: false,

@@ -15,6 +15,12 @@ use crate::decode::{decode, SAMPLE_RATE};
 pub struct CleanOptions {
     pub no_model: bool,
     pub no_gate: bool,
+    /// Skip the transient (click) suppressor after the model.
+    pub no_declick: bool,
+    /// Gate tracks the level after the model instead of the input level.
+    pub gate_level_after_model: bool,
+    /// DPDFNet attenuation limit in dB (`None`: unlimited).
+    pub attn_limit_db: Option<f64>,
     pub auto_level: bool,
     pub gain_db: f64,
     pub stereo: bool,
@@ -62,8 +68,9 @@ impl Rng {
     }
 }
 
-fn cli_gate() -> AdaptiveGate {
+fn cli_gate(level_after_model: bool) -> AdaptiveGate {
     AdaptiveGate::new(GateParams {
+        level_after_model,
         threshold: 0.70,
         close_threshold: 0.52,
         hangover_ms: 320.0,
@@ -90,6 +97,8 @@ pub fn clean_file(
     progress: &mut dyn FnMut(usize, usize),
 ) -> Result<CleanResult, String> {
     let t0 = Instant::now();
+    // The no-gate and stereo paths below do not go through `process_mono_frame`.
+    vidar_dsp::flush_denormals();
     let input = std::fs::canonicalize(input)
         .map_err(|e| format!("input file not found: {} ({e})", input.display()))?;
     let output_abs = if output.is_absolute() {
@@ -136,6 +145,7 @@ pub fn clean_file(
             dpdfnet_vad: opt.dpdfnet_vad.clone(),
             dpdfnet_model: opt.dpdfnet_model.clone(),
             model_dirs: opt.model_dirs.clone(),
+            dpdfnet_attn_limit_db: opt.attn_limit_db,
         };
         for _ in 0..channels {
             match create(&spec) {
@@ -153,7 +163,9 @@ pub fn clean_file(
         }
     }
     let mut gates: Vec<AdaptiveGate> = if use_gate {
-        (0..channels).map(|_| cli_gate()).collect()
+        (0..channels)
+            .map(|_| cli_gate(opt.gate_level_after_model))
+            .collect()
     } else {
         Vec::new()
     };
@@ -203,7 +215,7 @@ pub fn clean_file(
                     gate,
                     gain,
                     levelers.first_mut(),
-                    Some(&mut ts[0]),
+                    (!opt.no_declick).then_some(&mut ts[0]),
                     0.0,
                 );
                 (s.speech_prob, s.input_rms_db)
@@ -219,7 +231,9 @@ pub fn clean_file(
                     f.iter_mut().for_each(|x| *x /= PCM_SCALE);
                     rms = m.align_level(rms);
                 }
-                ts[0].process(&mut f, sp);
+                if !opt.no_declick {
+                    ts[0].process(&mut f, sp);
+                }
                 if let Some(l) = levelers.first_mut() {
                     l.process(&mut f, sp, rms, 0.0);
                 }
@@ -256,7 +270,9 @@ pub fn clean_file(
                 ((master_rms + 45.0) / 20.0).clamp(0.0, 1.0)
             };
             for c in 0..2 {
-                ts[c].process(&mut ch[c], master_sp);
+                if !opt.no_declick {
+                    ts[c].process(&mut ch[c], master_sp);
+                }
                 if let Some(l) = levelers.get_mut(c) {
                     l.process(&mut ch[c], master_sp, master_rms, 0.0);
                 }
@@ -422,6 +438,9 @@ mod tests {
         CleanOptions {
             no_model: false,
             no_gate: false,
+            no_declick: false,
+            gate_level_after_model: false,
+            attn_limit_db: None,
             auto_level: false,
             gain_db: 0.0,
             stereo: false,

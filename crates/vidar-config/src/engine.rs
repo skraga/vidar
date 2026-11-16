@@ -13,10 +13,16 @@ pub struct EngineSettings {
     pub mic_boost_db: f64,
     /// Always on in the app; tests turn it off to run the chain without a model.
     pub denoise_enabled: bool,
+    /// Always on in the app; tests turn it off.
     pub high_pass: bool,
     pub hpf_cutoff_hz: f64,
     pub auto_level: bool,
 }
+
+/// Output gain after the model (before boost).
+const OUTPUT_GAIN: f64 = 1.08;
+/// Rumble filter corner frequency.
+const HPF_CUTOFF_HZ: f64 = 80.0;
 
 /// Close threshold that keeps the tuned 0.52/0.70 hysteresis ratio.
 pub fn close_threshold_for(threshold: f64) -> f64 {
@@ -27,6 +33,7 @@ pub fn close_threshold_for(threshold: f64) -> f64 {
 impl EngineSettings {
     /// `is_laptop_mic` widens the gain for built-in laptop arrays (+1.6 dB).
     pub fn from_config(cfg: &Config, is_laptop_mic: bool) -> Self {
+        // Tuned values; only the strength (threshold) comes from the settings.
         let threshold = cfg.vad_threshold;
 
         let base_gain = if is_laptop_mic { 1.2 } else { 1.0 };
@@ -35,23 +42,23 @@ impl EngineSettings {
         Self {
             gate: GateParams {
                 threshold,
-                close_threshold: cfg.vad_close_threshold,
-                hangover_ms: cfg.vad_hangover_ms,
-                decay_ms: cfg.vad_decay_ms,
+                close_threshold: close_threshold_for(threshold),
+                hangover_ms: 320.0,
+                decay_ms: 80.0,
                 attack_ms: 28.0,
                 frame_ms: 10.0,
-                onset_threshold: cfg.vad_onset_threshold,
-                onset_snr_db: cfg.vad_onset_snr_db,
+                onset_threshold: 0.35,
+                onset_snr_db: 10.0,
                 lookahead: true,
-                floor_gain: cfg.vad_floor_gain,
+                floor_gain: 0.06,
                 cooldown_ms: 150.0,
                 ..GateParams::default()
             },
-            total_gain: cfg.output_gain * mic_gain,
+            total_gain: OUTPUT_GAIN * mic_gain,
             mic_boost_db: cfg.mic_boost_db,
             denoise_enabled: true,
-            high_pass: cfg.high_pass_filter,
-            hpf_cutoff_hz: cfg.hpf_cutoff_hz,
+            high_pass: true,
+            hpf_cutoff_hz: HPF_CUTOFF_HZ,
             auto_level: cfg.auto_level,
         }
     }

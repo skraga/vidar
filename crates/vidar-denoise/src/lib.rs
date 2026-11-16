@@ -64,6 +64,8 @@ pub struct DenoiseSpec {
     pub dpdfnet_model: String,
     /// Extra folders to search for `.onnx` models.
     pub model_dirs: Vec<PathBuf>,
+    /// DPDFNet attenuation limit in dB (`None`: unlimited).
+    pub dpdfnet_attn_limit_db: Option<f64>,
 }
 
 impl Default for DenoiseSpec {
@@ -73,6 +75,7 @@ impl Default for DenoiseSpec {
             dpdfnet_vad: "rnnoise".into(),
             dpdfnet_model: "dpdfnet2_48khz_hr".into(),
             model_dirs: Vec::new(),
+            dpdfnet_attn_limit_db: None,
         }
     }
 }
@@ -89,11 +92,9 @@ pub fn create(spec: &DenoiseSpec) -> Result<Box<dyn Denoiser>, Error> {
                 dpdfnet::DEFAULT_MODEL
             };
             let path = dpdfnet::find_model_path(model, &spec.model_dirs)?;
-            Ok(Box::new(DpdfNet::load(
-                &path,
-                model,
-                Vad::parse(&spec.dpdfnet_vad),
-            )?))
+            let mut d = DpdfNet::load(&path, model, Vad::parse(&spec.dpdfnet_vad))?;
+            d.set_attn_limit_db(spec.dpdfnet_attn_limit_db);
+            Ok(Box::new(d))
         }
         #[cfg(not(feature = "dpdfnet"))]
         Engine::DpdfNet => Err(Error::Unsupported("DPDFNet")),
