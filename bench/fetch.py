@@ -12,6 +12,7 @@ Download the public test sets used by bench/benchmark.py.
   python bench/fetch.py dns5 --dest ../bench-data/DNS5
   python bench/fetch.py ears-wham --dest ../bench-data/EARS
 """
+
 import argparse
 import csv
 import io
@@ -66,6 +67,7 @@ def fetch_dns5(dest):
 def fetch_ears_wham(dest):
     from remotezip import RemoteZip
     from tqdm import tqdm
+
     for spk in EARS_TEST_SPEAKERS:
         if not (dest / "EARS" / spk).is_dir():
             (dest / "EARS").mkdir(parents=True, exist_ok=True)
@@ -95,9 +97,11 @@ def fetch_ears_wham(dest):
     # The generator splits paths on "/", so run it with POSIX path joins (Windows accepts "/").
     # Its train/valid loops find no speakers here and do nothing; the test split re-seeds
     # numpy itself, so the output matches the official test set.
-    boot = ("import os, posixpath, runpy, sys; os.path.join = posixpath.join; "
-            "sys.argv = ['generate_ears_wham.py', '--data_dir', sys.argv[1]]; "
-            "runpy.run_path('generate_ears_wham.py', run_name='__main__')")
+    boot = (
+        "import os, posixpath, runpy, sys; os.path.join = posixpath.join; "
+        "sys.argv = ['generate_ears_wham.py', '--data_dir', sys.argv[1]]; "
+        "runpy.run_path('generate_ears_wham.py', run_name='__main__')"
+    )
     subprocess.run([sys.executable, "-c", boot, dest.resolve().as_posix()], cwd=gen, check=True)
     print(f"[ok] {dest / 'EARS-WHAM_v2' / 'test'}")
 

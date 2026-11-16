@@ -183,6 +183,9 @@ pub struct View {
     pub live: Option<Arc<Meters>>,
     pub test: TestView,
     pub auto_level: bool,
+    /// Voice tone preset (`"off"`, a preset name or `"custom"`) and the custom band gains.
+    pub eq_preset: String,
+    pub eq_custom_db: [f64; vidar_dsp::EQ_BANDS],
     pub raw_capture: bool,
     pub ui_theme: String,
     pub install: InstallState,
@@ -217,6 +220,13 @@ pub enum Cmd {
     /// Stop playback, or discard a recording or analysis in progress.
     StopTest,
     SetAutoLevel(bool),
+    /// Choose a voice tone preset (`"off"`, a preset name or `"custom"`).
+    SetEqPreset(String),
+    /// Custom band gains; switches to `"custom"`. `save: false` while a slider is dragged.
+    SetEqCustom {
+        gains_db: [f64; vidar_dsp::EQ_BANDS],
+        save: bool,
+    },
     SetRawCapture(bool),
     SetTheme(String),
     InstallDriver,
@@ -265,6 +275,8 @@ struct Core {
     /// Version being heard: 0 = original, i + 1 = variant i.
     test_track: Arc<AtomicUsize>,
     clip: Arc<Mutex<Option<Arc<TestClip>>>>,
+    /// Voice tone for test playback: applied live, so tone changes are heard while playing.
+    test_eq: Arc<Mutex<[f64; vidar_dsp::EQ_BANDS]>>,
     tx: Sender<Cmd>,
 }
 
@@ -683,6 +695,8 @@ impl Core {
             .map(|o| {
                 let mut cfg = self.cfg.clone();
                 cfg.denoise_engine = o.engine.into();
+                // Voice tone is added during playback instead, so it can change while you listen.
+                cfg.eq_preset = "off".into();
                 cfg.vad_threshold = o.threshold;
                 let settings = EngineSettings::from_config(&cfg, input.is_laptop_mic());
                 let spec = DenoiseSpec {
@@ -837,6 +851,12 @@ impl Core {
         });
     }
 
+    fn sync_test_eq(&self) {
+        if let Ok(mut g) = self.test_eq.lock() {
+            *g = self.cfg.eq_gains_db();
+        }
+    }
+
     fn play_test(&mut self, track: Track, start: f64, range: Option<(f64, f64)>) {
         let Some(clip) = self.clip.lock().ok().and_then(|c| c.clone()) else {
             return;
@@ -855,12 +875,13 @@ impl Core {
         self.test_cancel.store(false, Relaxed);
         self.test_track.store(track_index(track), Relaxed);
         let speakers = Self::audio().and_then(|a| Self::speakers(&a));
-        let (view, repaint, busy, cancel, current) = (
+        let (view, repaint, busy, cancel, current, eq) = (
             self.view.clone(),
             self.repaint.clone(),
             self.test_busy.clone(),
             self.test_cancel.clone(),
             self.test_track.clone(),
+            self.test_eq.clone(),
         );
         let len = clip.original.len();
         let to_sample = |f: f64| ((f.clamp(0.0, 1.0) * len as f64) as usize).min(len);
@@ -899,6 +920,7 @@ impl Core {
                 start,
                 range,
                 looping,
+                eq: Some(&eq),
             };
             let r = voice_test::play(speakers.as_deref(), &pb, &cancel, &mut |pos| {
                 notify(&|v| v.test.progress = pos as f64 / len.max(1) as f64)
@@ -1088,6 +1110,34 @@ impl Core {
                 }
                 self.publish(|v| v.auto_level = on);
             }
+            Cmd::SetEqPreset(name) => {
+                self.cfg.eq_preset = name;
+                self.cfg.sanitize();
+                self.save_now();
+                if let Some(e) = &self.engine {
+                    e.controls().set_eq(self.cfg.eq_gains_db());
+                }
+                self.sync_test_eq();
+                let preset = self.cfg.eq_preset.clone();
+                self.publish(|v| v.eq_preset = preset);
+            }
+            Cmd::SetEqCustom { gains_db, save } => {
+                self.cfg.eq_preset = "custom".into();
+                self.cfg.eq_custom_db = gains_db;
+                self.cfg.sanitize();
+                if save {
+                    self.save_now();
+                }
+                if let Some(e) = &self.engine {
+                    e.controls().set_eq(self.cfg.eq_gains_db());
+                }
+                self.sync_test_eq();
+                let g = self.cfg.eq_custom_db;
+                self.publish(|v| {
+                    v.eq_preset = "custom".into();
+                    v.eq_custom_db = g;
+                });
+            }
             Cmd::SetRawCapture(on) => {
                 self.cfg.raw_capture = on;
                 self.save_now();
@@ -1160,6 +1210,8 @@ pub fn spawn(cfg_path: PathBuf, cfg: Config) -> (Handle, std::thread::JoinHandle
         live: None,
         test: TestView::default(),
         auto_level: cfg.auto_level,
+        eq_preset: cfg.eq_preset.clone(),
+        eq_custom_db: cfg.eq_custom_db,
         raw_capture: cfg.raw_capture,
         ui_theme: cfg.ui_theme.clone(),
         install: InstallState::Idle,
@@ -1192,6 +1244,7 @@ fn run(
         is_swapped: cfg.is_swapped,
         original_mic_id: cfg.original_mic_id.clone(),
     };
+    let cfg_eq = cfg.eq_gains_db();
     let mut core = Core {
         cfg_path,
         cfg,
@@ -1207,6 +1260,7 @@ fn run(
         test_finish: Arc::new(AtomicBool::new(false)),
         test_track: Arc::new(AtomicUsize::new(0)),
         clip: Arc::new(Mutex::new(None)),
+        test_eq: Arc::new(Mutex::new(cfg_eq)),
         tx,
     };
     core.refresh_devices();
@@ -1265,7 +1319,9 @@ fn speech_probabilities(samples: &[f32]) -> Vec<f64> {
         return Vec::new();
     };
     samples
-        .chunks_exact(FRAME_SIZE)
+        .as_chunks::<FRAME_SIZE>()
+        .0
+        .iter()
         .map(|chunk| {
             let mut f: vidar_dsp::Frame = core::array::from_fn(|i| chunk[i] * PCM_SCALE);
             rn.process_frame(&mut f)

@@ -1,0 +1,126 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1" # weekly: catch new RustSec advisories without a code change
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+
+# Vidar is Windows-only (WASAPI, windows-rs, winresource, x64 ONNX Runtime DLL, MSVC build of
+# RNNoise), so every job runs on windows-latest. Linux/macOS would not compile apps/vidar.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  fmt:
+    name: rustfmt
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install # version + components from rust-toolchain.toml
+      - run: cargo fmt --all --check
+
+  # Shared by clippy/test: the RNNoise weights (78 MB, needed by build.rs), ONNX Runtime
+  # and the DPDFNet model are git-ignored and fetched by `cargo xtask fetch` (SHA-256 checked).
+  # They are cached, keyed on the xtask source (which pins URLs and hashes).
+  clippy:
+    name: clippy
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install # version + components from rust-toolchain.toml
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/cache@v4
+        with:
+          path: |
+            third_party/rnnoise/model
+            third_party/onnxruntime
+            models
+          key: vidar-assets-${{ hashFiles('xtask/src/main.rs') }}
+      - run: cargo xtask fetch
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install # version + components from rust-toolchain.toml
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/cache@v4
+        with:
+          path: |
+            third_party/rnnoise/model
+            third_party/onnxruntime
+            models
+          key: vidar-assets-${{ hashFiles('xtask/src/main.rs') }}
+      - run: cargo xtask fetch
+      # Golden tests need the models above; live device tests stay off (VIDAR_LIVE_TESTS unset).
+      - run: cargo test --workspace
+
+
+  # Non-Rust hooks from .pre-commit-config.yaml: hygiene, gitleaks, typos, ruff (bench/), actionlint.
+  # The Rust hooks are covered by the fmt/clippy/deny jobs, so they are skipped here.
+  pre-commit:
+    name: pre-commit (lint, secrets, spelling)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # gitleaks scans history
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
+      - run: pipx run pre-commit run --all-files --show-diff-on-failure
+        env:
+          SKIP: cargo-fmt,cargo-deny,cargo-clippy
+
+  # The per-crate licence page that `cargo xtask dist` ships (about.toml, about.hbs). Checked on
+  # every push so a crate cargo-about cannot resolve is caught before a release tag.
+  about:
+    name: cargo-about (licence texts)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about
+      - run: cargo about generate --workspace about.hbs > THIRD_PARTY_LICENSES.html
+      - uses: actions/upload-artifact@v4
+        with:
+          name: third-party-licenses
+          path: THIRD_PARTY_LICENSES.html
+
+  # Licences, RustSec advisories, banned crates and registries, configured in deny.toml.
+  deny:
+    name: cargo-deny (licenses, advisories)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          arguments: --all-features

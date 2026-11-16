@@ -307,13 +307,24 @@ impl Denoiser for DpdfNet {
         let full = self.hist_len == cap;
         let oldest = if full { self.hist_pos } else { 0 };
 
-        for (dst, c) in self.model.spec_in().chunks_exact_mut(2).zip(&self.spec_in) {
+        for (dst, c) in self
+            .model
+            .spec_in()
+            .as_chunks_mut::<2>()
+            .0
+            .iter_mut()
+            .zip(&self.spec_in)
+        {
             dst[0] = c.re as f32;
             dst[1] = c.im as f32;
         }
 
         if self.model.step().is_ok() {
-            for (c, src) in self.spec_out.iter_mut().zip(self.model.spec_out().chunks_exact(2)) {
+            for (c, src) in self
+                .spec_out
+                .iter_mut()
+                .zip(self.model.spec_out().as_chunks::<2>().0)
+            {
                 *c = Complex::new(f64::from(src[0]), f64::from(src[1]));
             }
         } else {
@@ -441,8 +452,8 @@ mod tests {
 
     #[test]
     fn identity_model_reconstructs_input_one_hop_late() {
-        let mut d = DpdfNet::with_model(Box::new(Identity::new()), "unknown", Vad::Spectral)
-            .unwrap();
+        let mut d =
+            DpdfNet::with_model(Box::new(Identity::new()), "unknown", Vad::Spectral).unwrap();
         let input: Vec<f32> = (0..FRAME_SIZE * 6)
             .map(|i| ((i as f32) * 0.031).sin() * 10_000.0)
             .collect();

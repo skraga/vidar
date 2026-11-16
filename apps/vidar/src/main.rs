@@ -24,6 +24,7 @@ pub enum Page {
     Home,
     Test,
     Settings,
+    About,
 }
 
 pub enum UiCmd {

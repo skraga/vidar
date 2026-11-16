@@ -1,0 +1,94 @@
+# pre-commit hooks — https://pre-commit.com
+#   install once:   uv tool install pre-commit   (or: pipx install pre-commit)
+#                   cargo install cargo-deny --locked
+#   enable:         pre-commit install --hook-type pre-commit --hook-type pre-push
+#   run everything: pre-commit run --all-files   (add --hook-stage pre-push for the slow ones)
+#
+# Fast checks run on every commit; clippy runs on push. CI runs the same checks.
+
+# Vendored / generated / binary content we don't lint.
+exclude: |
+  (?x)^(
+    drivers/|
+    third_party/|
+    models/|
+    tests/golden/.*\.(f32|wav)$
+  )
+
+default_install_hook_types: [pre-commit, pre-push]
+default_stages: [pre-commit]
+
+repos:
+  # ── generic hygiene ────────────────────────────────────────────────────────
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+      - id: end-of-file-fixer
+        exclude: \.csv$
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-case-conflict        # Windows-only devs, but CI/other clones may be case-sensitive
+      - id: check-added-large-files
+        args: [--maxkb=2048]           # models and runtimes come from `cargo xtask fetch`
+      - id: detect-private-key
+
+  # ── secrets ────────────────────────────────────────────────────────────────
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.0
+    hooks:
+      - id: gitleaks
+
+  # ── spelling (code + docs) ─────────────────────────────────────────────────
+  - repo: https://github.com/crate-ci/typos
+    rev: v1.52.2
+    hooks:
+      - id: typos
+        args: []                       # report only; don't auto-"fix" DSP jargon
+
+  # ── Python (bench/) ────────────────────────────────────────────────────────
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.5
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  # ── GitHub Actions ─────────────────────────────────────────────────────────
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.12
+    hooks:
+      - id: actionlint
+
+  # ── Rust (uses the local toolchain) ────────────────────────────────────────
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        # Formats the whole workspace once. Never pass filenames: pre-commit would run several
+        # `cargo fmt --all` processes in parallel and they race on the same files.
+        entry: cargo fmt --all
+        language: system
+        types: [rust]
+        pass_filenames: false
+        require_serial: true
+
+      - id: cargo-deny
+        name: cargo deny (licenses, advisories, bans, sources)
+        entry: cargo deny check
+        language: system
+        files: (^|/)(Cargo\.(toml|lock)|deny\.toml)$
+        pass_filenames: false
+        require_serial: true
+
+      - id: cargo-clippy
+        name: cargo clippy
+        entry: cargo clippy --workspace --all-targets -- -D warnings
+        language: system
+        types: [rust]
+        pass_filenames: false
+        require_serial: true
+        stages: [pre-push]

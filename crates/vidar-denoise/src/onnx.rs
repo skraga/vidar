@@ -113,8 +113,10 @@ impl OrtModel {
             // the next run, and outputs land directly in `spec_out` and the other state.
             b.bind_input(in_spec.as_str(), &spec_in).map_err(err)?;
             b.bind_input(in_state.as_str(), &states[i]).map_err(err)?;
-            b.bind_output(out_spec.as_str(), &mut spec_out).map_err(err)?;
-            b.bind_output(out_state.as_str(), &mut states[1 - i]).map_err(err)?;
+            b.bind_output(out_spec.as_str(), &mut spec_out)
+                .map_err(err)?;
+            b.bind_output(out_state.as_str(), &mut states[1 - i])
+                .map_err(err)?;
         }
 
         Ok(Self {

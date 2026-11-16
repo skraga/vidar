@@ -1,4 +1,5 @@
-//! Vidar signal chain: high-pass, adaptive gate, transient suppressor, leveler, limiter.
+//! Vidar signal chain: high-pass, adaptive gate, transient suppressor, leveler, equaliser,
+//! limiter.
 //!
 //! Sample buffers and gain ramps are `f32`; filter, gate and leveler state and levels are
 //! `f64`. The reference vectors in `tests/golden` pin the exact numeric behaviour.
@@ -9,6 +10,7 @@
 mod bands;
 mod chain;
 mod denormals;
+mod eq;
 mod gate;
 mod hpf;
 mod leveler;
@@ -19,6 +21,7 @@ mod transient;
 pub use bands::{VoiceBands, BANDS, BAND_CENTRES_HZ};
 pub use chain::{process_mono_frame, FrameStats};
 pub use denormals::flush_denormals;
+pub use eq::{eq_preset, VoiceEq, EQ_BANDS, EQ_FREQS_HZ, EQ_MAX_DB, EQ_POINTS_HZ, EQ_PRESETS};
 pub use gate::{AdaptiveGate, GateParams};
 pub use hpf::HighPass;
 pub use leveler::SpeechLeveler;

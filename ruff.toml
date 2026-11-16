@@ -1,0 +1,19 @@
+# Ruff config for the Python benchmark tooling (bench/). Pinned here so results don't depend
+# on a developer's global ruff settings.
+target-version = "py312"
+line-length = 120
+include = ["bench/**/*.py"]
+
+[lint]
+select = [
+    "E", "W",  # pycodestyle
+    "F",       # pyflakes: unused imports/variables, undefined names
+    "I",       # import sorting
+    "B",       # bugbear: likely bugs
+    "UP",      # pyupgrade
+]
+ignore = [
+    "E501",    # long lines are left to the formatter
+    "E741",
+    "B905",    # zip() without strict=: arrays are length-checked upstream; strict would change behaviour    # `l` etc. are conventional in DSP code
+]

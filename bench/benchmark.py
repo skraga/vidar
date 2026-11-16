@@ -33,6 +33,7 @@ so adding a system only scores that system.
   python bench/benchmark.py blind --blind-dir V5_BlindTestSet --name dns5 --dnsmos DNSMOS --work bench-out
   python bench/benchmark.py noise --noise-dir MS-SNSD/noise_test --work bench-out
 """
+
 import argparse
 import csv
 import glob
@@ -59,14 +60,22 @@ DEFAULT_CLI = Path(__file__).resolve().parent.parent / "target" / "release" / "v
 # Vidar configurations to score: name -> vidar-cli flags.
 SYSTEMS = {
     "voice": ["--engine", "rnnoise"],
-    "voice_hd": ["--engine", "dpdfnet", "--dpdfnet-vad", "rnnoise"],
-    "voice_hd_spectral": ["--engine", "dpdfnet", "--dpdfnet-vad", "spectral"],
+    "voice_hd": ["--engine", "dpdfnet", "--no-fallback", "--dpdfnet-vad", "rnnoise"],
+    "voice_hd_spectral": ["--engine", "dpdfnet", "--no-fallback", "--dpdfnet-vad", "spectral"],
     "voice_no_gate": ["--engine", "rnnoise", "--no-gate"],
-    "voice_hd_no_gate": ["--engine", "dpdfnet", "--dpdfnet-vad", "rnnoise", "--no-gate"],
-    "voice_hd_no_declick": ["--engine", "dpdfnet", "--dpdfnet-vad", "rnnoise", "--no-declick"],
-    "voice_hd_gate_out": ["--engine", "dpdfnet", "--dpdfnet-vad", "rnnoise", "--gate-level", "output"],
-    "voice_hd_8": ["--engine", "dpdfnet", "--dpdfnet-vad", "rnnoise", "--dpdfnet-model", "dpdfnet8_48khz_hr"],
-    "no_model": ["--no-rnnoise"],
+    "voice_hd_no_gate": ["--engine", "dpdfnet", "--no-fallback", "--dpdfnet-vad", "rnnoise", "--no-gate"],
+    "voice_hd_no_declick": ["--engine", "dpdfnet", "--no-fallback", "--dpdfnet-vad", "rnnoise", "--no-declick"],
+    "voice_hd_gate_out": ["--engine", "dpdfnet", "--no-fallback", "--dpdfnet-vad", "rnnoise", "--gate-level", "output"],
+    "voice_hd_8": [
+        "--engine",
+        "dpdfnet",
+        "--no-fallback",
+        "--dpdfnet-vad",
+        "rnnoise",
+        "--dpdfnet-model",
+        "dpdfnet8_48khz_hr",
+    ],
+    "no_model": ["--no-model"],
 }
 
 FAMILY_METRICS = {
@@ -80,6 +89,7 @@ FAMILY_METRICS = {
 
 def _write(path, x, sr, subtype="PCM_16"):
     import soundfile as sf
+
     sf.write(path, np.clip(x, -1, 1) if subtype == "PCM_16" else x, sr, subtype=subtype)
 
 
@@ -92,14 +102,21 @@ def _rms(x):
 # text=<transcript or None>, plus grouping fields). prepare() converts them into
 # WORK/<set>/noisy (48 kHz PCM, what vidar-cli reads) and WORK/<set>/clean48 (float).
 
+
 def items_vbd(a):
     root = Path(a.vbd_dir)
     out = []
     for c in sorted((root / "clean_testset_wav").glob("*.wav")):
         t = root / "testset_txt" / (c.stem + ".txt")
-        out.append(dict(name=c.stem, noisy=str(root / "noisy_testset_wav" / c.name), clean=str(c),
-                        text=t.read_text(errors="replace").strip() if t.exists() else None,
-                        speaker=c.stem.split("_")[0]))
+        out.append(
+            dict(
+                name=c.stem,
+                noisy=str(root / "noisy_testset_wav" / c.name),
+                clean=str(c),
+                text=t.read_text(errors="replace").strip() if t.exists() else None,
+                speaker=c.stem.split("_")[0],
+            )
+        )
     return out
 
 
@@ -112,14 +129,24 @@ def items_ears(a):
         cid, snr = n.stem.split("_")
         snr = float(snr[:-2])
         band = "<2.5" if snr < 2.5 else "2.5-7.5" if snr < 7.5 else "7.5-12.5" if snr < 12.5 else ">12.5"
-        out.append(dict(name=f"{n.parent.name}_{cid}", noisy=str(n), clean=str(root / "clean" / n.parent.name / f"{cid}.wav"),
-                        text=None, speaker=n.parent.name, snr=band))
+        out.append(
+            dict(
+                name=f"{n.parent.name}_{cid}",
+                noisy=str(n),
+                clean=str(root / "clean" / n.parent.name / f"{cid}.wav"),
+                text=None,
+                speaker=n.parent.name,
+                snr=band,
+            )
+        )
     return out
 
 
 def items_pairs(a):
-    clean = {Path(p).relative_to(a.clean_dir).with_suffix("").as_posix(): p
-             for p in glob.glob(os.path.join(a.clean_dir, "**", "*.wav"), recursive=True)}
+    clean = {
+        Path(p).relative_to(a.clean_dir).with_suffix("").as_posix(): p
+        for p in glob.glob(os.path.join(a.clean_dir, "**", "*.wav"), recursive=True)
+    }
     out = []
     for p in sorted(glob.glob(os.path.join(a.noisy_dir, "**", "*.wav"), recursive=True)):
         rel = Path(p).relative_to(a.noisy_dir).with_suffix("").as_posix()
@@ -128,8 +155,15 @@ def items_pairs(a):
             fid = rel.rsplit("fileid_", 1)[-1]
             c = next((v for k, v in clean.items() if k.endswith(f"fileid_{fid}")), None) if "fileid_" in rel else None
         if c:
-            out.append(dict(name=rel.replace("/", "__"), noisy=p, clean=c, text=None,
-                            kind=rel.split("/")[0] if "/" in rel else "all"))
+            out.append(
+                dict(
+                    name=rel.replace("/", "__"),
+                    noisy=p,
+                    clean=c,
+                    text=None,
+                    kind=rel.split("/")[0] if "/" in rel else "all",
+                )
+            )
     return out
 
 
@@ -144,17 +178,19 @@ def items_snsd(a):
         by_type[Path(f).stem.rsplit("_", 1)[0]].append(f)
     picks = rng.choice(len(clean_files), size=a.clips_per_noise * len(by_type), replace=False)
     mix_dir, ref_dir = work / "noisy", work / "clean48"
-    mix_dir.mkdir(parents=True, exist_ok=True); ref_dir.mkdir(parents=True, exist_ok=True)
+    mix_dir.mkdir(parents=True, exist_ok=True)
+    ref_dir.mkdir(parents=True, exist_ok=True)
     items, i = [], 0
     for ntype in sorted(by_type):
         for _ in range(a.clips_per_noise):
-            clean = M.load(clean_files[picks[i]], SR); i += 1
+            clean = M.load(clean_files[picks[i]], SR)
+            i += 1
             clean *= 10 ** (-25 / 20) / _rms(clean)  # MS-SNSD convention: -25 dBFS speech
             noise = M.load(by_type[ntype][rng.integers(len(by_type[ntype]))], SR)
             if len(noise) < len(clean):
                 noise = np.tile(noise, int(np.ceil(len(clean) / len(noise))))
             off = rng.integers(0, len(noise) - len(clean) + 1)
-            noise = noise[off:off + len(clean)]
+            noise = noise[off : off + len(clean)]
             for snr in SNRS:
                 name = f"{ntype}_{i:03d}_snr{snr:02d}"
                 if not (ref_dir / f"{name}.wav").exists() or not (mix_dir / f"{name}.wav").exists():
@@ -163,8 +199,16 @@ def items_snsd(a):
                     scale = 0.95 / peak if peak > 0.95 else 1.0
                     _write(mix_dir / f"{name}.wav", mix * scale, SR)
                     _write(ref_dir / f"{name}.wav", clean * scale, SR, "FLOAT")
-                items.append(dict(name=name, noisy=str(mix_dir / f"{name}.wav"),
-                                  clean=str(ref_dir / f"{name}.wav"), text=None, noise=ntype, snr=snr))
+                items.append(
+                    dict(
+                        name=name,
+                        noisy=str(mix_dir / f"{name}.wav"),
+                        clean=str(ref_dir / f"{name}.wav"),
+                        text=None,
+                        noise=ntype,
+                        snr=snr,
+                    )
+                )
     return items
 
 
@@ -228,6 +272,7 @@ def prepare(work, items):
 
 # ---------------------------------------------------------------- processing
 
+
 def run_systems(cli, in_dir, out_root, systems, jobs):
     """Clean the folder once per system with vidar-cli (parallel inside the CLI)."""
     for s in systems:
@@ -236,8 +281,20 @@ def run_systems(cli, in_dir, out_root, systems, jobs):
         if all((out / f.name).exists() for f in Path(in_dir).glob("*.wav")):
             continue
         t0 = time.time()
-        subprocess.run([str(cli), "--clean", str(in_dir), str(out), "--no-progress", "--no-stats", "--jobs", str(jobs),
-                        *SYSTEMS[s]], check=True)
+        subprocess.run(
+            [
+                str(cli),
+                "--clean",
+                str(in_dir),
+                str(out),
+                "--no-progress",
+                "--no-stats",
+                "--jobs",
+                str(jobs),
+                *SYSTEMS[s],
+            ],
+            check=True,
+        )
         for f in out.glob("*_cleaned.wav"):
             f.replace(out / (f.name[: -len("_cleaned.wav")] + ".wav"))
         print(f"[run] {s}: {time.time() - t0:.1f}s", flush=True)
@@ -252,6 +309,7 @@ def audio_path(work, system, name):
 
 
 # ---------------------------------------------------------------- scoring with a cache
+
 
 def cached(work, family, system, names, compute):
     """Scores for `names` from WORK/scores/<family>/<system>.json, computing the missing ones.
@@ -282,23 +340,35 @@ def score_all(a, work, items, systems, families):
         sys_list = (["clean"] + base) if has_clean and fam in ("dnsmos", "nn", "wer") else base
         for s in sys_list:
             if fam == "ref":
+
                 def compute(todo, s=s):
-                    tasks = [(s, n, str(work / "clean48" / f"{n}.wav"), str(audio_path(work, s, n)), a.fullband)
-                             for n in todo]
+                    tasks = [
+                        (s, n, str(work / "clean48" / f"{n}.wav"), str(audio_path(work, s, n)), a.fullband)
+                        for n in todo
+                    ]
                     with Pool(a.jobs) as pool:
                         return dict(zip(todo, pool.map(M.score_ref, tasks, chunksize=4)))
             elif fam == "noise":
+
                 def compute(todo, s=s):
                     tasks = [(s, n, str(work / "noisy" / f"{n}.wav"), str(audio_path(work, s, n))) for n in todo]
                     with Pool(a.jobs) as pool:
                         return dict(zip(todo, pool.map(M.score_noise, tasks, chunksize=4)))
             elif fam == "dnsmos":
+
                 def compute(todo, s=s):
                     p835, p808 = dnsmos_paths(a.dnsmos)
                     with Pool(a.jobs, initializer=M.dnsmos_init, initargs=(p835, p808)) as pool:
-                        return dict(zip(todo, pool.map(M.score_dnsmos, [(s, n, str(audio_path(work, s, n))) for n in todo],
-                                                       chunksize=4)))
+                        return dict(
+                            zip(
+                                todo,
+                                pool.map(
+                                    M.score_dnsmos, [(s, n, str(audio_path(work, s, n))) for n in todo], chunksize=4
+                                ),
+                            )
+                        )
             elif fam == "nn":
+
                 def compute(todo, s=s):
                     nn = _model("nn", lambda: M.Neural(utmos=a.utmos))
                     return {n: nn.score(str(audio_path(work, s, n))) for n in todo}
@@ -312,6 +382,7 @@ def score_all(a, work, items, systems, families):
                         hyp = tr.text(str(audio_path(work, s, n)))
                         out[n] = dict(text=hyp, **M.word_errors(refs[n], hyp))
                     return out
+
             fam_key = "nn_utmos" if fam == "nn" and a.utmos else fam
             for n, v in cached(work, fam_key, s, names, compute).items():
                 rows.setdefault((s, n), {}).update({k: x for k, x in v.items() if k != "text"})
@@ -337,13 +408,19 @@ def _model(key, make):
 def reference_texts(a, work, items):
     """The data set's transcript where it has one, else Whisper's transcript of the clean audio."""
     from whisper.normalizers import EnglishTextNormalizer
+
     norm = EnglishTextNormalizer()
     given = {it["name"]: norm(it["text"]) for it in items if it.get("text")}
     missing = [it["name"] for it in items if it["name"] not in given]
     if missing:
         tr = _model("whisper", lambda: M.Transcriber(a.whisper_model))
-        got = cached(work, "transcript", "clean", missing, lambda todo: {n: tr.text(str(audio_path(work, "clean", n)))
-                                                                        for n in todo})
+        got = cached(
+            work,
+            "transcript",
+            "clean",
+            missing,
+            lambda todo: {n: tr.text(str(audio_path(work, "clean", n))) for n in todo},
+        )
         given.update(got)
     return given
 
@@ -359,6 +436,7 @@ def dnsmos_paths(p):
 def have_torch():
     try:
         import torch  # noqa: F401
+
         return True
     except ImportError:
         return False
@@ -366,14 +444,16 @@ def have_torch():
 
 def have_whisper():
     try:
-        import whisper  # noqa: F401
         import jiwer  # noqa: F401
+        import whisper  # noqa: F401
+
         return True
     except ImportError:
         return False
 
 
 # ---------------------------------------------------------------- reporting
+
 
 def report(a, work, rows, systems, families, groups):
     write_csv(Path(a.work, f"{a.name}_scores.csv"), rows)
@@ -390,8 +470,9 @@ def report(a, work, rows, systems, families, groups):
         for r in rows:
             if "lag" in r:
                 lags[r["system"]].append(abs(r["lag"]))
-        print("\nmedian |alignment lag| (16 kHz samples, should be 0):",
-              {s: float(np.median(v)) for s, v in lags.items()})
+        print(
+            "\nmedian |alignment lag| (16 kHz samples, should be 0):", {s: float(np.median(v)) for s, v in lags.items()}
+        )
 
 
 def write_csv(path, rows):
@@ -406,15 +487,22 @@ def write_csv(path, rows):
 
 # ---------------------------------------------------------------- MUSHRA listening test
 
+
 def export_mushra(a):
     """Write a webMUSHRA config + loudness-matched stimuli for `--trials` clips of a scored set."""
     import pyloudnorm as pyln
+
     work = Path(a.work, a.name)
     items = json.load(open(work / "items.json"))
     systems = a.systems.split(",")
     meter = pyln.Meter(SR)
-    pool = [it for it in items if it["clean"] and 3 <= sf_seconds(work / "clean48" / f"{it['name']}.wav") <= 10
-            and all(audio_path(work, s, it["name"]).exists() for s in systems)]
+    pool = [
+        it
+        for it in items
+        if it["clean"]
+        and 3 <= sf_seconds(work / "clean48" / f"{it['name']}.wav") <= 10
+        and all(audio_path(work, s, it["name"]).exists() for s in systems)
+    ]
     random.Random(a.seed).shuffle(pool)
     if a.max_snr is not None:
         pool = [it for it in pool if isinstance(it.get("snr"), (int, float)) and it["snr"] <= a.max_snr] or pool
@@ -436,40 +524,70 @@ def export_mushra(a):
             if np.isfinite(loud):
                 x = pyln.normalize.loudness(x, loud, -26.0)
             _write(d / f"{k}.wav", x, SR)
-        pages.append({
-            "type": "mushra", "id": n, "name": "Rate each version against the reference",
-            "content": "How close is each version to the reference? Noise, missing word parts and "
-                       "a dull or robotic voice all count against it.",
-            "showWaveform": False, "enableLooping": True, "randomize": True, "showConditionNames": False,
-            "createAnchor35": True, "createAnchor70": False,
-            "reference": (audio_root / n / "reference.wav").as_posix(),
-            "stimuli": {k: (audio_root / n / f"{k}.wav").as_posix() for k in sig if k != "reference"},
-        })
+        pages.append(
+            {
+                "type": "mushra",
+                "id": n,
+                "name": "Rate each version against the reference",
+                "content": "How close is each version to the reference? Noise, missing word parts and "
+                "a dull or robotic voice all count against it.",
+                "showWaveform": False,
+                "enableLooping": True,
+                "randomize": True,
+                "showConditionNames": False,
+                "createAnchor35": True,
+                "createAnchor70": False,
+                "reference": (audio_root / n / "reference.wav").as_posix(),
+                "stimuli": {k: (audio_root / n / f"{k}.wav").as_posix() for k in sig if k != "reference"},
+            }
+        )
     first = (audio_root / pool[0]["name"] / "reference.wav").as_posix()
     cfg = {
-        "testname": "Vidar noise suppression", "testId": f"vidar_{a.name}", "bufferSize": 2048,
-        "stopOnErrors": True, "showButtonPreviousPage": True, "remoteService": "service/write.php",
+        "testname": "Vidar noise suppression",
+        "testId": f"vidar_{a.name}",
+        "bufferSize": 2048,
+        "stopOnErrors": True,
+        "showButtonPreviousPage": True,
+        "remoteService": "service/write.php",
         "pages": [
-            {"type": "generic", "id": "intro", "name": "Welcome",
-             "content": "You will hear short recordings cleaned in different ways. Use headphones in a quiet room."},
-            {"type": "volume", "id": "volume", "name": "Volume", "content": "Set a comfortable level.",
-             "stimulus": first, "defaultVolume": 0.5},
+            {
+                "type": "generic",
+                "id": "intro",
+                "name": "Welcome",
+                "content": "You will hear short recordings cleaned in different ways. Use headphones in a quiet room.",
+            },
+            {
+                "type": "volume",
+                "id": "volume",
+                "name": "Volume",
+                "content": "Set a comfortable level.",
+                "stimulus": first,
+                "defaultVolume": 0.5,
+            },
             ["random"] + pages,
-            {"type": "finish", "name": "Thank you", "content": "Thank you for taking part.",
-             "showResults": True, "writeResults": True,
-             "questionnaire": [{"type": "text", "label": "Name or nickname", "name": "listener"}]},
+            {
+                "type": "finish",
+                "name": "Thank you",
+                "content": "Thank you for taking part.",
+                "showResults": True,
+                "writeResults": True,
+                "questionnaire": [{"type": "text", "label": "Name or nickname", "name": "listener"}],
+            },
         ],
     }
     (out / "configs").mkdir(parents=True, exist_ok=True)
     # JSON is valid YAML, and webMUSHRA reads configs with a YAML parser.
     with open(out / "configs" / f"vidar_{a.name}.yaml", "w") as f:
         json.dump(cfg, f, indent=2)
-    print(f"[mushra] {len(pool)} trials -> {out / 'configs'}. Copy that folder into webMUSHRA and open "
-          f"?config=vidar_{a.name}.yaml")
+    print(
+        f"[mushra] {len(pool)} trials -> {out / 'configs'}. Copy that folder into webMUSHRA and open "
+        f"?config=vidar_{a.name}.yaml"
+    )
 
 
 def sf_seconds(p):
     import soundfile as sf
+
     return sf.info(str(p)).duration
 
 
@@ -498,21 +616,29 @@ def mushra_results(a):
 
 # ---------------------------------------------------------------- CLI
 
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    p_vbd = sub.add_parser("vbd"); p_vbd.add_argument("--vbd-dir", required=True)
-    p_ears = sub.add_parser("ears"); p_ears.add_argument("--ears-dir", required=True,
-                                                         help="EARS-WHAM_v2 (or its test folder)")
-    p_snsd = sub.add_parser("snsd"); p_snsd.add_argument("--snsd-dir", required=True)
-    p_snsd.add_argument("--clips-per-noise", type=int, default=8); p_snsd.add_argument("--seed", type=int, default=7)
-    p_pairs = sub.add_parser("pairs"); p_pairs.add_argument("--clean-dir", required=True)
+    p_vbd = sub.add_parser("vbd")
+    p_vbd.add_argument("--vbd-dir", required=True)
+    p_ears = sub.add_parser("ears")
+    p_ears.add_argument("--ears-dir", required=True, help="EARS-WHAM_v2 (or its test folder)")
+    p_snsd = sub.add_parser("snsd")
+    p_snsd.add_argument("--snsd-dir", required=True)
+    p_snsd.add_argument("--clips-per-noise", type=int, default=8)
+    p_snsd.add_argument("--seed", type=int, default=7)
+    p_pairs = sub.add_parser("pairs")
+    p_pairs.add_argument("--clean-dir", required=True)
     p_pairs.add_argument("--noisy-dir", required=True)
     p_pairs.add_argument("--wideband", action="store_true", help="the clean audio has nothing above 8 kHz")
-    p_blind = sub.add_parser("blind", aliases=["dns"]); p_blind.add_argument("--blind-dir", required=True)
-    p_noise = sub.add_parser("noise"); p_noise.add_argument("--noise-dir", required=True)
+    p_blind = sub.add_parser("blind", aliases=["dns"])
+    p_blind.add_argument("--blind-dir", required=True)
+    p_noise = sub.add_parser("noise")
+    p_noise.add_argument("--noise-dir", required=True)
     p_noise.add_argument("--levels", default="-50,-35,-20", help="dBFS RMS of the noise")
-    p_noise.add_argument("--clips-per-type", type=int, default=3); p_noise.add_argument("--seconds", type=float, default=12)
+    p_noise.add_argument("--clips-per-type", type=int, default=3)
+    p_noise.add_argument("--seconds", type=float, default=12)
     p_noise.add_argument("--seed", type=int, default=7)
     scored = (p_vbd, p_ears, p_snsd, p_pairs, p_blind, p_noise)
     defaults = {p_vbd: "vbd", p_ears: "ears", p_snsd: "snsd", p_pairs: "pairs", p_blind: "dns", p_noise: "noise"}
@@ -528,12 +654,16 @@ def main():
         p.add_argument("--whisper-model", default="turbo")
         p.add_argument("--baseline", default="noisy", help="system the others are tested against")
         p.add_argument("--limit", type=int, help="only the first N clips (quick checks)")
-    p_mu = sub.add_parser("mushra"); p_mu.add_argument("--work", required=True)
-    p_mu.add_argument("--name", default="vbd"); p_mu.add_argument("--systems", default="voice,voice_hd")
-    p_mu.add_argument("--trials", type=int, default=12); p_mu.add_argument("--seed", type=int, default=1)
+    p_mu = sub.add_parser("mushra")
+    p_mu.add_argument("--work", required=True)
+    p_mu.add_argument("--name", default="vbd")
+    p_mu.add_argument("--systems", default="voice,voice_hd")
+    p_mu.add_argument("--trials", type=int, default=12)
+    p_mu.add_argument("--seed", type=int, default=1)
     p_mu.add_argument("--max-snr", type=float, help="only clips at or below this SNR (MS-SNSD)")
     p_mu.add_argument("--out", required=True, help="where to write configs/ for webMUSHRA")
-    p_mr = sub.add_parser("mushra-results"); p_mr.add_argument("--csv", required=True)
+    p_mr = sub.add_parser("mushra-results")
+    p_mr.add_argument("--csv", required=True)
     a = ap.parse_args()
 
     if a.cmd == "mushra":
@@ -550,18 +680,38 @@ def main():
     a.levels = [int(x) for x in a.levels.split(",")] if a.cmd == "noise" else None
     a.fullband = a.cmd in ("vbd", "ears") or (a.cmd == "pairs" and not a.wideband)
 
-    loaders = {"vbd": items_vbd, "ears": items_ears, "snsd": items_snsd, "pairs": items_pairs,
-               "blind": items_blind, "dns": items_blind, "noise": items_noise}
-    groups = {"vbd": ["speaker"], "ears": ["snr", "speaker"], "snsd": ["snr", "noise"], "pairs": ["kind"],
-              "blind": ["kind"], "dns": ["kind"], "noise": ["level", "noise"]}[a.cmd]
+    loaders = {
+        "vbd": items_vbd,
+        "ears": items_ears,
+        "snsd": items_snsd,
+        "pairs": items_pairs,
+        "blind": items_blind,
+        "dns": items_blind,
+        "noise": items_noise,
+    }
+    groups = {
+        "vbd": ["speaker"],
+        "ears": ["snr", "speaker"],
+        "snsd": ["snr", "noise"],
+        "pairs": ["kind"],
+        "blind": ["kind"],
+        "dns": ["kind"],
+        "noise": ["level", "noise"],
+    }[a.cmd]
     with_ref = a.cmd in ("vbd", "ears", "snsd", "pairs")
     if a.cmd == "noise":
         possible = ["noise"]
     else:
         possible = (["ref"] if with_ref else []) + ["dnsmos", "nn"] + (["wer"] if with_ref else [])
     if a.metrics == "auto":
-        families = [f for f in possible if f in ("ref", "noise")
-                    or (f == "dnsmos" and a.dnsmos) or (f == "nn" and have_torch()) or (f == "wer" and have_whisper())]
+        families = [
+            f
+            for f in possible
+            if f in ("ref", "noise")
+            or (f == "dnsmos" and a.dnsmos)
+            or (f == "nn" and have_torch())
+            or (f == "wer" and have_whisper())
+        ]
     else:
         families = a.metrics.split(",")
         bad = [f for f in families if f not in possible]

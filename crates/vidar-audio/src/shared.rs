@@ -29,6 +29,8 @@ pub struct Controls {
     pub vad_close_threshold: AtomicF64,
     pub total_gain: AtomicF64,
     pub mic_boost_db: AtomicF64,
+    /// Equaliser band gains in dB, low to high.
+    pub eq_db: [AtomicF64; vidar_dsp::EQ_BANDS],
 }
 
 impl Controls {
@@ -42,7 +44,18 @@ impl Controls {
             vad_close_threshold: AtomicF64::new(s.gate.close_threshold),
             total_gain: AtomicF64::new(s.total_gain),
             mic_boost_db: AtomicF64::new(s.mic_boost_db),
+            eq_db: std::array::from_fn(|i| AtomicF64::new(s.eq_db[i])),
         }
+    }
+
+    pub fn set_eq(&self, gains_db: [f64; vidar_dsp::EQ_BANDS]) {
+        for (a, g) in self.eq_db.iter().zip(gains_db) {
+            a.set(g);
+        }
+    }
+
+    pub fn eq(&self) -> [f64; vidar_dsp::EQ_BANDS] {
+        std::array::from_fn(|i| self.eq_db[i].get())
     }
 
     /// Sensitivity slider: sets the open threshold and the matching close threshold.
@@ -108,7 +121,10 @@ pub struct MeterSnapshot {
 impl Meters {
     pub fn new() -> Self {
         let m = Self::default();
-        for a in [&m.out_peak_db, &m.out_rms_db, &m.in_peak_db].into_iter().chain(&m.bands) {
+        for a in [&m.out_peak_db, &m.out_rms_db, &m.in_peak_db]
+            .into_iter()
+            .chain(&m.bands)
+        {
             f32_set(a, -100.0);
         }
         m

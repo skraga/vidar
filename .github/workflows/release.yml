@@ -1,0 +1,114 @@
+name: Release
+
+# Push a tag like `v0.1.0` (matching [workspace.package] version in Cargo.toml) to build
+# the Windows package with `cargo xtask dist`, zip it and publish a GitHub release.
+# Tags with a suffix (`v0.2.0-rc.1`) are published as pre-releases.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)build and publish, e.g. v0.1.0"
+        required: true
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: build (windows x64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Check tag matches Cargo.toml version
+        run: |
+          version=$(sed -n '/^\[workspace.package\]/,/^\[/{s/^version *= *"\(.*\)"/\1/p}' Cargo.toml)
+          if [ "v${version}" != "${TAG}" ]; then
+            echo "::error::Tag ${TAG} does not match workspace version ${version}"
+            exit 1
+          fi
+          echo "VERSION=${version}" >> "$GITHUB_ENV"
+
+      - run: rustup toolchain install # version + components from rust-toolchain.toml
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release
+      - uses: actions/cache@v4
+        with:
+          path: |
+            third_party/rnnoise/model
+            third_party/onnxruntime
+            models
+          key: vidar-assets-${{ hashFiles('xtask/src/main.rs') }}
+
+      # Same gate as CI: never publish a build whose tests fail.
+      - run: cargo xtask fetch
+      - run: cargo test --workspace --locked
+
+      # `cargo xtask dist` generates licenses\THIRD_PARTY_LICENSES.html with cargo-about.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about
+
+      - name: Build package
+        run: cargo xtask dist
+
+      - name: Zip and checksum
+        shell: pwsh
+        run: |
+          $name = "vidar-$env:VERSION-windows-x64"
+          New-Item -ItemType Directory -Force out | Out-Null
+          Compress-Archive -Path dist/vidar -DestinationPath "out/$name.zip" -CompressionLevel Optimal
+          $hash = (Get-FileHash "out/$name.zip" -Algorithm SHA256).Hash.ToLower()
+          "$hash  $name.zip" | Out-File -Encoding ascii "out/$name.zip.sha256"
+          Get-ChildItem out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vidar-release
+          path: out/*
+          if-no-files-found: error
+
+  publish:
+    name: publish GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: vidar-release
+          path: out
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: Vidar ${{ env.TAG }}
+          prerelease: ${{ contains(env.TAG, '-') }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: out/*
+          body: |
+            Windows 10 (1903+) / 11, 64-bit x86.
+
+            Download `vidar-*-windows-x64.zip`, extract it anywhere and run `vidar.exe`.
+            On first start Vidar offers to install the virtual microphone (VB-CABLE).
+            Verify the download against the `.sha256` file if you like.

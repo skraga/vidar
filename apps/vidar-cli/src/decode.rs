@@ -33,7 +33,12 @@ fn read_interleaved(path: &Path) -> Result<(Vec<f32>, usize, usize), String> {
         hint.with_extension(ext);
     }
     let mut format = symphonia::default::get_probe()
-        .probe(&hint, mss, FormatOptions::default(), MetadataOptions::default())
+        .probe(
+            &hint,
+            mss,
+            FormatOptions::default(),
+            MetadataOptions::default(),
+        )
         .map_err(|e| format!("unsupported or unreadable audio file: {e}"))?;
     let track = format
         .default_track(TrackType::Audio)

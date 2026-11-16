@@ -19,3 +19,15 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+---
+
+The MIT License above covers Vidar's own code. It does not cover third-party
+components in this repository or in Vidar releases, which keep their own licences:
+
+- drivers/vbcable/ is VB-CABLE by VB-Audio Software (www.vb-cable.com). It is
+  proprietary donationware, redistributed unmodified under VB-Audio's terms
+  (https://vb-audio.com/Services/licensing.htm), and is not open source.
+- third_party/ and the downloaded models and runtime are under their own licences.
+
+See THIRD_PARTY_NOTICES.md for every component and its licence.

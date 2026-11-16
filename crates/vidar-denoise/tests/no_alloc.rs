@@ -73,6 +73,11 @@ fn processing_a_frame_does_not_allocate() {
         }
         COUNTING.store(false, SeqCst);
         let n = ALLOCS.load(SeqCst);
-        assert_eq!(n, 0, "{} / {vad}: {n} heap allocations in 200 frames", engine.as_str());
+        assert_eq!(
+            n,
+            0,
+            "{} / {vad}: {n} heap allocations in 200 frames",
+            engine.as_str()
+        );
     }
 }

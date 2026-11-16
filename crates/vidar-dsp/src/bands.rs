@@ -61,7 +61,9 @@ impl Default for VoiceBands {
 impl VoiceBands {
     pub fn new(sample_rate: f64) -> Self {
         // Q of about 1.4 gives roughly one-octave bands that just touch.
-        Self { filters: BAND_CENTRES_HZ.map(|f| BandPass::new(f, 1.4, sample_rate)) }
+        Self {
+            filters: BAND_CENTRES_HZ.map(|f| BandPass::new(f, 1.4, sample_rate)),
+        }
     }
 
     pub fn reset(&mut self) {
@@ -82,7 +84,11 @@ impl VoiceBands {
                 sum += f64::from(y) * f64::from(y);
             }
             let rms = (sum / frame.len() as f64).sqrt();
-            *o = if rms > 1e-5 { 20.0 * rms.log10() } else { -100.0 };
+            *o = if rms > 1e-5 {
+                20.0 * rms.log10()
+            } else {
+                -100.0
+            };
         }
         out
     }
@@ -104,7 +110,9 @@ mod tests {
             }
             last = b.analyze(&frame);
         }
-        (0..BANDS).max_by(|&a, &c| last[a].total_cmp(&last[c])).unwrap()
+        (0..BANDS)
+            .max_by(|&a, &c| last[a].total_cmp(&last[c]))
+            .unwrap()
     }
 
     #[test]
@@ -132,6 +140,10 @@ mod tests {
             }
             db = b.analyze(&frame);
         }
-        assert!((db[2] + 3.0).abs() < 0.5, "640 Hz full-scale sine: {} dB", db[2]);
+        assert!(
+            (db[2] + 3.0).abs() < 0.5,
+            "640 Hz full-scale sine: {} dB",
+            db[2]
+        );
     }
 }

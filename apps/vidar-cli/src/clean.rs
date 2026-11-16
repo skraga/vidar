@@ -14,6 +14,8 @@ use crate::decode::{decode, SAMPLE_RATE};
 #[derive(Debug, Clone)]
 pub struct CleanOptions {
     pub no_model: bool,
+    /// Fail instead of falling back to RNNoise when the chosen model cannot load.
+    pub no_fallback: bool,
     pub no_gate: bool,
     /// Skip the transient (click) suppressor after the model.
     pub no_declick: bool,
@@ -149,9 +151,15 @@ pub fn clean_file(
         };
         for _ in 0..channels {
             let mut made = create(&spec);
+            if let (Err(e), true) = (&made, opt.no_fallback) {
+                return Err(format!("{} unavailable: {e}", spec.engine.label()));
+            }
             // Like the app: if DPDFNet (Voice HD, the default) cannot load, use RNNoise.
             if let (Err(e), true) = (&made, models.is_empty() && spec.engine != Engine::RnNoise) {
-                eprintln!("[WARN] {} unavailable ({e}); using RNNoise.", spec.engine.label());
+                eprintln!(
+                    "[WARN] {} unavailable ({e}); using RNNoise.",
+                    spec.engine.label()
+                );
                 spec.engine = Engine::RnNoise;
                 made = create(&spec);
             }
@@ -224,6 +232,7 @@ pub fn clean_file(
                     levelers.first_mut(),
                     (!opt.no_declick).then_some(&mut ts[0]),
                     0.0,
+                    None,
                 );
                 (s.speech_prob, s.input_rms_db)
             } else {
@@ -444,6 +453,7 @@ mod tests {
     fn opts() -> CleanOptions {
         CleanOptions {
             no_model: false,
+            no_fallback: false,
             no_gate: false,
             no_declick: false,
             gate_level_after_model: false,
@@ -462,6 +472,24 @@ mod tests {
 
     fn golden_clip() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/golden/clips/keys_zira.wav")
+    }
+
+    #[test]
+    fn no_fallback_fails_when_model_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let o = CleanOptions {
+            engine: Engine::DpdfNet,
+            dpdfnet_model: "no_such_model".into(),
+            no_fallback: true,
+            ..opts()
+        };
+        let r = clean_file(
+            &golden_clip(),
+            &dir.path().join("out.wav"),
+            &o,
+            &mut |_, _| {},
+        );
+        assert!(r.is_err(), "expected an error, got {r:?}");
     }
 
     #[test]

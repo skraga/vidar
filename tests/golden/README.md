@@ -11,5 +11,13 @@ change in how Vidar processes audio.
 | `<config>/<clip>.f32` | Full output samples (little-endian float32) for two cases |
 | `manifest.json` | The configurations and clips |
 
-If a change to the chain is intentional, the vectors must be regenerated and the change
-reviewed: the test tolerances are tight (about 1e-6) on purpose.
+The test allows about 1e-3 (−65 dB) on levels and output samples and 5e-3 on speech
+probability, because RNNoise picks scalar, SSE4.1 or AVX2 code depending on the CPU and the
+rounding differences build up in its recurrent state. The gate must make exactly the same
+open/close decisions on every frame.
+
+There is no generator in this repository. The vectors were written once, before the first
+commit, by running the chain over the clips with the settings in `manifest.json` and dumping
+one CSV row per 480-sample frame (columns as in the header row). If a change to the chain is
+intentional, they must be regenerated the same way and the difference reviewed; adding a
+regeneration mode to `golden.rs` is the obvious way to make that repeatable.

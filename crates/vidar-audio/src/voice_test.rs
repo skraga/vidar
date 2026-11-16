@@ -5,11 +5,11 @@
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
 use std::sync::mpsc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use vidar_config::EngineSettings;
-use vidar_dsp::{levels, Denoiser, FRAME_SIZE};
+use vidar_dsp::{levels, soft_limit, Denoiser, VoiceEq, EQ_BANDS, FRAME_SIZE};
 use vidar_win::Flow;
 use windows::Win32::Media::Audio::AUDCLNT_BUFFERFLAGS_SILENT;
 
@@ -235,6 +235,10 @@ pub struct Playback<'a> {
     /// Part of the clip to play; with `looping` it repeats until cancelled.
     pub range: Range<usize>,
     pub looping: bool,
+    /// Voice tone applied on the fly to every track but the first (the unprocessed original),
+    /// read again for each buffer so changes are heard while playing. The tracks themselves
+    /// are processed without it.
+    pub eq: Option<&'a Mutex<[f64; EQ_BANDS]>>,
 }
 
 /// Crossfade length when switching tracks mid-playback (10 ms).
@@ -277,6 +281,8 @@ pub fn play(
     let mut heard_track = pb.current.load(Relaxed);
     // (previous track, samples of crossfade left)
     let mut fade: Option<(usize, usize)> = None;
+    let mut eq = VoiceEq::new(f64::from(SAMPLE_RATE));
+    let mut mono: Vec<f32> = Vec::new();
     loop {
         if cancel.load(Relaxed) {
             break;
@@ -299,7 +305,8 @@ pub fn play(
                 unsafe {
                     let p = client.GetBuffer(n as u32).map_err(|e| err(e.into()))? as *mut f32;
                     let out = std::slice::from_raw_parts_mut(p, n * ch);
-                    for (k, frame) in out.chunks_exact_mut(ch).enumerate() {
+                    mono.clear();
+                    for k in 0..n {
                         let i = at(written + k);
                         let mut s = track(heard_track)[i];
                         if let Some((old, left)) = fade {
@@ -311,6 +318,20 @@ pub fn play(
                                 None
                             };
                         }
+                        mono.push(s);
+                    }
+                    if let Some(gains) = pb.eq.and_then(|m| m.lock().ok().map(|g| *g)) {
+                        eq.set_gains(gains);
+                        // The filters keep running on the original too, so switching to a
+                        // processed version does not start them from silence.
+                        let mut shaped = mono.clone();
+                        eq.process(&mut shaped);
+                        if heard_track != 0 && !eq.is_flat() {
+                            soft_limit(&mut shaped, 0.85);
+                            mono = shaped;
+                        }
+                    }
+                    for (frame, &s) in out.chunks_exact_mut(ch).zip(&mono) {
                         frame.fill(s);
                     }
                     client

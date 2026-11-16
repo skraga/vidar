@@ -1,6 +1,6 @@
 use crate::levels::{levels, soft_limit, soft_preclip};
 use crate::{
-    AdaptiveGate, Denoiser, Frame, HighPass, SpeechLeveler, TransientSuppressor, PCM_SCALE,
+    AdaptiveGate, Denoiser, Frame, HighPass, SpeechLeveler, TransientSuppressor, VoiceEq, PCM_SCALE,
 };
 
 /// Per-frame measurements returned by [`process_mono_frame`].
@@ -18,7 +18,10 @@ pub struct FrameStats {
 ///
 /// high-pass → metering and soft pre-clip → neural model (or a level-based probability
 /// when bypassed) → transient suppression → optional leveler → gain → adaptive gate →
-/// soft limiter.
+/// optional equaliser → soft limiter.
+///
+/// The equaliser comes after the model, so the model hears the natural voice, and before
+/// the limiter, which catches any peaks a boost adds.
 ///
 /// Sets flush-to-zero on the calling thread first (see [`crate::flush_denormals`]), so the
 /// live engine, the voice test and the CLI all run the models without subnormal slowdowns.
@@ -32,6 +35,7 @@ pub fn process_mono_frame(
     leveler: Option<&mut SpeechLeveler>,
     transient: Option<&mut TransientSuppressor>,
     mic_boost_db: f64,
+    eq: Option<&mut VoiceEq>,
 ) -> FrameStats {
     crate::flush_denormals();
     if let Some(h) = hpf {
@@ -77,6 +81,9 @@ pub fn process_mono_frame(
     }
 
     let gate_gain = gate.process(frame, speech_prob, Some(gate_level_db.unwrap_or(level_db)));
+    if let Some(eq) = eq {
+        eq.process(frame);
+    }
     soft_limit(frame, 0.85);
 
     FrameStats {
@@ -118,10 +125,10 @@ mod tests {
     fn bypass_derives_probability_from_level() {
         let mut gate = AdaptiveGate::new(GateParams::default());
         let mut f = [0.0f32; FRAME_SIZE];
-        let s = process_mono_frame(&mut f, None, None, &mut gate, 1.0, None, None, 0.0);
+        let s = process_mono_frame(&mut f, None, None, &mut gate, 1.0, None, None, 0.0, None);
         assert_eq!(s.speech_prob, 0.0);
         let mut f = [0.5f32; FRAME_SIZE];
-        let s = process_mono_frame(&mut f, None, None, &mut gate, 1.0, None, None, 0.0);
+        let s = process_mono_frame(&mut f, None, None, &mut gate, 1.0, None, None, 0.0, None);
         assert_eq!(s.speech_prob, 1.0);
     }
 
@@ -133,7 +140,17 @@ mod tests {
             delay: vec![-100.0],
         };
         let mut f = [0.3f32; FRAME_SIZE];
-        let s = process_mono_frame(&mut f, Some(&mut m), None, &mut gate, 1.0, None, None, 0.0);
+        let s = process_mono_frame(
+            &mut f,
+            Some(&mut m),
+            None,
+            &mut gate,
+            1.0,
+            None,
+            None,
+            0.0,
+            None,
+        );
         assert_eq!(s.speech_prob, 0.9);
         assert!(s.input_rms_db > -11.0, "input level is reported unaligned");
     }
@@ -145,7 +162,7 @@ mod tests {
             ..GateParams::default()
         });
         let mut f = [0.99f32; FRAME_SIZE];
-        process_mono_frame(&mut f, None, None, &mut gate, 4.0, None, None, 0.0);
+        process_mono_frame(&mut f, None, None, &mut gate, 4.0, None, None, 0.0, None);
         assert!(f.iter().all(|x| x.abs() <= 1.0));
     }
 }

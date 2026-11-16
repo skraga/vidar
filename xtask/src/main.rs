@@ -2,6 +2,7 @@
 //!
 //!   fetch         RNNoise weights + default DPDFNet model, hash-checked
 //!   fetch --all   also the larger dpdfnet8 model
+//!   dist          release build + everything it needs, licences included, in dist\vidar
 
 use std::fs;
 use std::io::Read;
@@ -111,7 +112,8 @@ fn fetch_onnxruntime() -> Result<()> {
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(body))?;
     for name in ["onnxruntime.dll", "LICENSE", "ThirdPartyNotices.txt"] {
         let suffix = format!("/{name}");
-        let entry = (0..zip.len()).find(|&i| matches!(zip.name_for_index(i), Some(Ok(n)) if n.ends_with(&suffix)));
+        let entry = (0..zip.len())
+            .find(|&i| matches!(zip.name_for_index(i), Some(Ok(n)) if n.ends_with(&suffix)));
         if let Some(i) = entry {
             let mut f = zip.by_index(i)?;
             let mut bytes = Vec::new();
@@ -148,6 +150,158 @@ fn fetch_dpdfnet(all: bool) -> Result<()> {
     Ok(())
 }
 
+/// Copies `src` into `dst`, creating `dst` and its subfolders.
+fn copy_dir(src: &Path, dst: &Path) -> Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let to = dst.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir(&entry.path(), &to)?;
+        } else {
+            fs::copy(entry.path(), &to)?;
+        }
+    }
+    Ok(())
+}
+
+/// Builds the release binaries and assembles a folder that can be zipped and shipped as is:
+///
+/// ```text
+/// dist\vidar\
+///   vidar.exe, vidar-cli.exe, onnxruntime.dll
+///   models\*.onnx
+///   drivers\vbcable\     VB-Audio's package, unmodified
+///   LICENSE, THIRD_PARTY_NOTICES.md
+///   licenses\            upstream licence texts the notices refer to, plus
+///                        THIRD_PARTY_LICENSES.html (every Rust crate, from cargo-about)
+/// ```
+///
+/// Every licence file is required: a missing one fails the build instead of shipping without it.
+/// Needs cargo-about (`cargo install cargo-about --locked`).
+fn dist(all_models: bool) -> Result<()> {
+    let root = workspace_root();
+    fetch_rnnoise()?;
+    fetch_onnxruntime()?;
+    fetch_dpdfnet(all_models)?;
+
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+
+    // Licence texts of every Rust dependency (about.toml, about.hbs). Runs before the long
+    // build so a missing cargo-about fails fast.
+    let about = std::process::Command::new(&cargo)
+        .current_dir(&root)
+        .args(["about", "generate", "--workspace", "about.hbs"])
+        .stderr(std::process::Stdio::inherit())
+        .output()?;
+    if !about.status.success() || about.stdout.is_empty() {
+        return Err(
+            "cargo about failed; install it with `cargo install cargo-about --locked`".into(),
+        );
+    }
+    let crate_licenses = about.stdout;
+
+    let status = std::process::Command::new(&cargo)
+        .current_dir(&root)
+        .args([
+            "build",
+            "--release",
+            "--locked",
+            "-p",
+            "vidar",
+            "-p",
+            "vidar-cli",
+        ])
+        .status()?;
+    if !status.success() {
+        return Err("release build failed".into());
+    }
+
+    let out = root.join("dist").join("vidar");
+    if out.exists() {
+        fs::remove_dir_all(&out)?;
+    }
+    fs::create_dir_all(out.join("licenses"))?;
+    fs::create_dir_all(out.join("models"))?;
+
+    let release = root.join("target").join("release");
+    let ort = root.join("third_party").join("onnxruntime");
+    let rnnoise = root.join("third_party").join("rnnoise");
+    let vendored = root.join("third_party").join("licenses");
+    // (source, path inside dist\vidar)
+    let mut files: Vec<(PathBuf, String)> = vec![
+        (release.join("vidar.exe"), "vidar.exe".into()),
+        (release.join("vidar-cli.exe"), "vidar-cli.exe".into()),
+        (ort.join("onnxruntime.dll"), "onnxruntime.dll".into()),
+        (root.join("LICENSE"), "LICENSE".into()),
+        (
+            root.join("THIRD_PARTY_NOTICES.md"),
+            "THIRD_PARTY_NOTICES.md".into(),
+        ),
+        (
+            ort.join("LICENSE"),
+            "licenses/onnxruntime-LICENSE.txt".into(),
+        ),
+        (
+            ort.join("ThirdPartyNotices.txt"),
+            "licenses/onnxruntime-ThirdPartyNotices.txt".into(),
+        ),
+        (
+            rnnoise.join("COPYING"),
+            "licenses/rnnoise-COPYING.txt".into(),
+        ),
+        (
+            rnnoise.join("AUTHORS"),
+            "licenses/rnnoise-AUTHORS.txt".into(),
+        ),
+        (
+            vendored.join("Apache-2.0.txt"),
+            "licenses/dpdfnet-Apache-2.0.txt".into(),
+        ),
+        (
+            vendored.join("MPL-2.0.txt"),
+            "licenses/symphonia-MPL-2.0.txt".into(),
+        ),
+        (
+            root.join("assets").join("fonts").join("OFL.txt"),
+            "licenses/inter-OFL.txt".into(),
+        ),
+    ];
+    for name in [
+        "egui-fonts-OFL.txt",
+        "egui-fonts-UFL.txt",
+        "egui-fonts-Hack.txt",
+        "egui-fonts-emoji-icon-font-MIT.txt",
+        "egui-fonts-egui-icons.txt",
+    ] {
+        files.push((vendored.join(name), format!("licenses/{name}")));
+    }
+    for (from, to) in &files {
+        if !from.is_file() {
+            return Err(format!("missing {}", from.display()).into());
+        }
+        fs::copy(from, out.join(to))?;
+    }
+    fs::write(
+        out.join("licenses").join("THIRD_PARTY_LICENSES.html"),
+        crate_licenses,
+    )?;
+    for (i, (name, _)) in DPDFNET_MODELS.iter().enumerate() {
+        if i > 0 && !all_models {
+            continue;
+        }
+        let model = format!("{name}.onnx");
+        fs::copy(models_dir().join(&model), out.join("models").join(&model))?;
+    }
+    copy_dir(
+        &root.join("drivers").join("vbcable"),
+        &out.join("drivers").join("vbcable"),
+    )?;
+
+    println!("[OK] {}", out.display());
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
@@ -158,8 +312,9 @@ fn main() -> Result<()> {
             fetch_dpdfnet(all)?;
             Ok(())
         }
+        Some("dist") => dist(args.iter().any(|a| a == "--all")),
         _ => {
-            eprintln!("usage: cargo xtask fetch [--all]");
+            eprintln!("usage: cargo xtask fetch [--all] | dist [--all]");
             std::process::exit(2);
         }
     }

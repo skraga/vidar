@@ -34,16 +34,20 @@ set here that can show what Voice HD does above 8 kHz.
 - **Word errors**: Whisper (large-v3-turbo) transcribes every clip and is checked against the
   data set's own transcripts. This is the most direct test of "did it eat words".
 - **Word starts cut**: the share of word starts (after a pause of 100 ms or more) whose first
-  50 ms come out more than 6 dB quieter than the rest of the word. This is what a gate that
-  opens late, or a model that is slow to trust a new sound, does.
+  50 ms come out more than 6 dB quieter, relative to the clean take, than speech does overall
+  (the median output/reference level ratio over all speech). Speech means 10 ms frames of the
+  clean take within 30 dB of its loud frames and at least 15 dB above its own noise floor, in
+  runs of 50 ms or more. This is what a gate that opens late, or a model that is slow to trust
+  a new sound, does.
 
 What it shows:
 
 - **Voice HD is clearly better than Voice on every score here.**
 - **Voice costs words.** It doubles the word error rate (2.5% → 5.5%), lowers ESTOI below the
   untouched input, and cuts about one word start in seven. NISQA's sub-scores also rate it as
-  choppier and more coloured than the input. Turning the gate off changes none of this, so it
-  is RNNoise itself.
+  choppier and more coloured than the input. The gate is unlikely to be the cause: on MS-SNSD
+  turning it off moves the scores by less than their margin of error (see below), so this
+  points at RNNoise itself. A "Voice, no gate" run on this set would confirm it.
 - **Voice HD keeps words.** Its word error rate is the same as the untouched input's.
 - **The gate does little for Voice HD here.** Without it, PESQ and ESTOI are better (2.82 vs
   2.65) and the background scores are the same within 0.03. See
@@ -120,7 +124,7 @@ through a wall), which is speech, so both let half of it through.
 ### Processor use
 
 A 120-second clip (the five golden test clips looped: clean speech, fan, keyboard, hiss, loud
-voice) cleaned with `vidar-cli -j 1`, three runs each, median shown. Measured on an AMD Ryzen 7
+voice) cleaned with `vidar-cli`, three runs each, median shown. Measured on an AMD Ryzen 7
 9800X3D (8 cores, 16 threads) with the release build, RNNoise using its AVX2 layers. Both
 models run single-threaded, so the time taken is the share of one core.
 
@@ -149,8 +153,9 @@ Even the slowest frame uses less than a fifth of the budget.
 
 ## Reading the numbers
 
-- **Voice HD is better everywhere**, and it is the only mode that removes noise without
-  costing words. It has twice the delay (60 vs 30 ms) and uses about five times the processor.
+- **Voice HD is better everywhere.** On VoiceBank+DEMAND it removes noise without costing
+  words; in very loud noise (MS-SNSD at 0-5 dB SNR) it also cuts word starts, though it loses
+  far fewer words than Voice. It has twice the delay (60 vs 30 ms) and uses about five times the processor.
 - **Voice is cheap but not free.** It still raises every "how does it sound" score, but it
   doubles word errors and cuts the start of about one word in seven, at about 2.5% of one core.
 - **The gate is for the pauses**, not for the speech. It barely changes the scores while
@@ -161,7 +166,8 @@ Even the slowest frame uses less than a fifth of the budget.
 
 ## Running it yourself
 
-You need a release build, the data sets and, for the neural scores and Whisper, a PyTorch
+You need a release build, the DPDFNet models (`cargo xtask fetch --all`: the `voice_hd_8`
+system needs the larger model, which a plain `fetch` skips), the data sets and, for the neural scores and Whisper, a PyTorch
 install (they run on the GPU when there is one).
 
 ```shell
@@ -193,7 +199,7 @@ python bench/benchmark.py blind --blind-dir ../bench-data/DNS5/V5_BlindTestSet_m
 python bench/benchmark.py noise --noise-dir MS-SNSD/noise_test --systems voice,voice_hd,no_model --work bench-out
 ```
 
-Options shared by all of them:
+Options shared by all the scoring commands (everything except `mushra` and `mushra-results`):
 
 - `--systems` picks the configurations to score (default `voice,voice_hd`). See the table below.
 - `--metrics` picks the score families: `ref` (PESQ, STOI, ESTOI, SI-SDR, log-spectral distance,
@@ -203,18 +209,34 @@ Options shared by all of them:
 - `--utmos` adds UTMOS. It is off by default because it loads through `torch.hub`, which runs
   code from the [SpeechMOS](https://github.com/tarepan/SpeechMOS) repository (pinned to v1.2.0).
 - `--limit N` scores only the first N clips, for a quick check.
+- `--name` names the subfolder of `--work` and the prefix of the CSVs (default: the command).
+- `--jobs N` cleans N files at once (default: all cores).
+- `--cli PATH` points at a different `vidar-cli.exe` (default: the release build).
+- `--whisper-model` picks the Whisper model for word errors (default `turbo`).
+
+Options of single commands:
+
+- `pairs --wideband`: the clean audio has nothing above 8 kHz.
+- `snsd --clips-per-noise N --seed S` (default 8 and 7).
+- `noise --levels -50,-35,-20 --clips-per-type 3 --seconds 12 --seed 7`: noise levels in dBFS
+  RMS, clips per noise type, clip length and seed.
+- `mushra --trials 12 --seed 1 --max-snr DB`: number of trials, seed, and only clips at or
+  below that SNR (MS-SNSD).
+
+Every `voice_hd*` system passes `--no-fallback`, so if DPDFNet cannot load the run fails
+instead of quietly scoring RNNoise under the Voice HD name.
 
 | System | `vidar-cli` flags |
 |---|---|
 | `voice` | `--engine rnnoise` |
-| `voice_hd` | `--engine dpdfnet --dpdfnet-vad rnnoise` |
-| `voice_hd_spectral` | `--engine dpdfnet --dpdfnet-vad spectral` |
+| `voice_hd` | `--engine dpdfnet --no-fallback --dpdfnet-vad rnnoise` |
+| `voice_hd_spectral` | `--engine dpdfnet --no-fallback --dpdfnet-vad spectral` |
 | `voice_no_gate` | `--engine rnnoise --no-gate` |
-| `voice_hd_no_gate` | `--engine dpdfnet --dpdfnet-vad rnnoise --no-gate` |
-| `voice_hd_no_declick` | `--engine dpdfnet --dpdfnet-vad rnnoise --no-declick` |
-| `voice_hd_gate_out` | `--engine dpdfnet --dpdfnet-vad rnnoise --gate-level output` |
-| `voice_hd_8` | `--engine dpdfnet --dpdfnet-vad rnnoise --dpdfnet-model dpdfnet8_48khz_hr` |
-| `no_model` | `--no-rnnoise` (filter and gate only) |
+| `voice_hd_no_gate` | `--engine dpdfnet --no-fallback --dpdfnet-vad rnnoise --no-gate` |
+| `voice_hd_no_declick` | `--engine dpdfnet --no-fallback --dpdfnet-vad rnnoise --no-declick` |
+| `voice_hd_gate_out` | `--engine dpdfnet --no-fallback --dpdfnet-vad rnnoise --gate-level output` |
+| `voice_hd_8` | `--engine dpdfnet --no-fallback --dpdfnet-vad rnnoise --dpdfnet-model dpdfnet8_48khz_hr` |
+| `no_model` | `--no-model` (filter and gate only) |
 
 The script prints each score with its confidence interval and its difference from the baseline,
 then plain averages by SNR, noise type, speaker or recording type. It writes every per-clip
@@ -232,7 +254,7 @@ official generator from [ears_benchmark](https://github.com/sp-uhh/ears_benchmar
 commit) for the test split only. That last step runs code downloaded from GitHub.
 
 The processor figures need no data set: loop any 48 kHz recording to two minutes, then time
-`vidar-cli --clean clip.wav out.wav -j 1` with each configuration's flags from the table above.
+`vidar-cli --clean clip.wav out.wav` with each configuration's flags from the table above.
 
 ### Listening test
 
@@ -254,7 +276,8 @@ with its confidence interval.
 ## Not measured yet
 
 - **DNS Challenge 5 blind set** (2023): 753 real 48 kHz recordings, headset and speakerphone.
-  The data set is downloaded; it is one `blind` run.
+  `python bench/fetch.py dns5` downloads it; scoring it is one `blind` run with
+  `--blind-dir .../V5_BlindTestSet_mono --name dns5`.
 - **EARS-WHAM**: 48 kHz studio speech in real noise, including whispering, shouting and
   emotional speech that VoiceBank lacks.
 - **A listening test.** The export is ready; it needs listeners.

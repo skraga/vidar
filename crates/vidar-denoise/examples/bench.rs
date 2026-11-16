@@ -17,7 +17,12 @@ use vidar_dsp::{
 
 /// Frame times in microseconds over speech followed by `silence` frames of digital silence;
 /// returns (mean, p99, max) over the silent part only.
-fn silence_tail(spec: &DenoiseSpec, speech: &[Frame], silence: usize, ftz: bool) -> Option<(f64, f64, f64)> {
+fn silence_tail(
+    spec: &DenoiseSpec,
+    speech: &[Frame],
+    silence: usize,
+    ftz: bool,
+) -> Option<(f64, f64, f64)> {
     let spec = spec.clone();
     let speech = speech.to_vec();
     std::thread::spawn(move || {
@@ -71,16 +76,10 @@ fn main() {
         .samples::<i16>()
         .map(|s| s.unwrap() as f32 / 32768.0)
         .collect();
-    let frames: Vec<Frame> = audio
-        .chunks_exact(FRAME_SIZE)
-        .map(|c| c.try_into().unwrap())
-        .collect();
+    let frames: Vec<Frame> = audio.as_chunks::<FRAME_SIZE>().0.to_vec();
     // The models see what the chain gives them: samples scaled to PCM range. RNNoise's cost
     // depends on the level, so +-1.0 input would understate it about fivefold.
-    let model_frames: Vec<Frame> = frames
-        .iter()
-        .map(|f| f.map(|x| x * PCM_SCALE))
-        .collect();
+    let model_frames: Vec<Frame> = frames.iter().map(|f| f.map(|x| x * PCM_SCALE)).collect();
 
     // The rest of the chain (filter, gate, leveler, click suppressor) with no model.
     {
@@ -100,6 +99,7 @@ fn main() {
                     Some(&mut lev),
                     Some(&mut ts),
                     0.0,
+                    None,
                 );
             }
         }
@@ -172,8 +172,10 @@ fn main() {
         );
     }
 
-    println!("
-Digital silence after speech, 10 s (us/frame: mean / p99 / max)");
+    println!(
+        "
+Digital silence after speech, 10 s (us/frame: mean / p99 / max)"
+    );
     for (name, engine, vad) in cases {
         let spec = DenoiseSpec {
             engine,

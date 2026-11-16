@@ -2,23 +2,47 @@
 
 ## Building
 
-You need Windows 10 (1809 or later) or 11 on x86-64, [Rust](https://rustup.rs) (stable) and
+You need Windows 10 (1903 or later) or 11 on x86-64, [Rust](https://rustup.rs) (rustup picks up the pinned version from `rust-toolchain.toml`) and
 the Visual Studio C++ build tools.
 
 ```shell
-cargo xtask fetch        # RNNoise weights, DPDFNet models, ONNX Runtime, each checked against SHA-256
+cargo xtask fetch        # RNNoise weights, the DPDFNet model, ONNX Runtime, each checked against SHA-256
 cargo build --release    # target\release\vidar.exe and vidar-cli.exe
 cargo test --workspace
 ```
 
 `cargo xtask fetch` downloads into `third_party/rnnoise/model/`, `third_party/onnxruntime/`
-and `models/`. All three are git-ignored.
+and `models/`. All three are git-ignored. It fetches only the default DPDFNet model,
+`dpdfnet2_48khz_hr`; `cargo xtask fetch --all` also fetches the larger `dpdfnet8_48khz_hr`.
+Run the fetch before building or testing: the RNNoise build needs its weights, and
+`cargo test --workspace` fails without the DPDFNet model and ONNX Runtime.
+
+Where they are looked for at run time:
+
+- DPDFNet models: `--models-dir` (CLI only), the repo's `models/` (development builds of the
+  CLI), `%VIDAR_MODELS_DIR%`, then `models\` next to the executable.
+- `onnxruntime.dll`: `%ORT_DYLIB_PATH%`, next to the executable, then
+  `third_party/onnxruntime/` in the repo.
 
 To try the live app you also need the virtual cable. Start `vidar.exe` and press **Install
 virtual microphone**, or run `vidar-cli endpoints install-driver` from an elevated prompt. It
 looks for the driver in `drivers\vbcable` next to the executable. See
 [How it works](how-it-works.md#the-virtual-cable) for why Vidar uses VB-Audio's signed driver
 rather than its own.
+
+## Releasing
+
+Releases are built by [`.github/workflows/release.yml`](../.github/workflows/release.yml):
+
+1. Bump `version` under `[workspace.package]` in `Cargo.toml`, run `cargo check` so
+   `Cargo.lock` follows, and commit.
+2. Tag and push: `git tag v0.2.0 && git push origin main v0.2.0`.
+
+The workflow checks that the tag matches the Cargo version, runs the tests, builds the package
+with `cargo xtask dist` (which needs cargo-about for `licenses\THIRD_PARTY_LICENSES.html`; the
+CI `cargo-about` job checks it on every push) and publishes `vidar-<version>-windows-x64.zip` plus its `.sha256` as a
+GitHub release with generated notes. Tags with a suffix (`v0.2.0-rc.1`) become pre-releases.
+To rebuild an existing tag, run the workflow by hand (**Actions → Release → Run workflow**).
 
 ## Layout
 
@@ -60,9 +84,12 @@ flowchart TB
 - `cargo test --workspace` runs the unit tests plus the **golden tests**
   ([crates/vidar-denoise/tests/golden.rs](../crates/vidar-denoise/tests/golden.rs)). Five
   clips (clean speech, fan, keyboard, hiss and a loud voice) run through nine configurations,
-  and every frame is compared with stored reference values to about 1e-6. Any change to how
-  Vidar sounds makes them fail. If the change is intended, regenerate the vectors and review
-  the difference; see [tests/golden/README.md](../tests/golden/README.md).
+  and every frame is compared with stored reference values. The bounds are about 1e-3
+  (−65 dB) on levels and samples, loose enough for RNNoise picking scalar, SSE4.1 or AVX2
+  code depending on the CPU, and the gate must make exactly the same open/close decisions.
+  Any real change to how Vidar sounds makes them fail. If the change is intended, the vectors
+  must be regenerated and the difference reviewed; see
+  [tests/golden/README.md](../tests/golden/README.md).
 - **Live tests** use the real default devices (muted). They are opt-in:
 
   ```shell
@@ -90,16 +117,22 @@ Options for `--clean`:
 | `--engine rnnoise\|dpdfnet` | Model (default `dpdfnet`, falling back to `rnnoise` if it cannot load) |
 | `--dpdfnet-vad rnnoise\|spectral` | Speech detector for DPDFNet (default `rnnoise`) |
 | `--dpdfnet-model dpdfnet2_48khz_hr\|dpdfnet8_48khz_hr` | DPDFNet variant |
-| `--models-dir <dir>` | Folder with the DPDFNet `.onnx` files (default: next to the program) |
-| `--no-model` | Filter and gate only |
+| `--no-fallback` | Fail instead of falling back to `rnnoise` when DPDFNet cannot load (used by the benchmark) |
+| `--models-dir <dir>` | Folder with the DPDFNet `.onnx` files (default: `models\` next to the program) |
+| `--no-model` | Filter and gate only (`--no-rnnoise` is an older alias) |
 | `--no-gate` | Skip the gate |
+| `--no-declick` | Skip the click suppressor after the noise model |
+| `--gate-level input\|output` | Level the gate tracks: the input (default) or the model's output (experimental) |
+| `--attn-limit-db <dB>` | Voice HD: the most the model may turn anything down (default: no limit) |
 | `--auto-level` | Raise quiet speech |
 | `--gain <dB>` | Make-up gain |
 | `--stereo` | Keep stereo, gate both channels together |
 | `--report-json <file>` | Per-frame speech probability and level (single file only) |
-| `-j, --jobs <N>` | Files at once (default: all cores) |
+| `-j, --jobs <N>` | Files at once in folder mode (default: all cores) |
 
-Any common audio format is accepted. The output is WAV.
+Input can be WAV, MP3, FLAC, Ogg Vorbis or AAC/M4A; in folder mode only files with those
+extensions (`.wav`, `.mp3`, `.flac`, `.ogg`, `.m4a`) are picked up, and `*_cleaned` files
+are skipped. The output is WAV. In folder mode the exit code is 1 if any file failed.
 
 `endpoints` actions:
 
@@ -121,7 +154,26 @@ Any common audio format is accepted. The output is WAV.
 
 Settings live in `%APPDATA%\Vidar\config.json`. If a `config.json` sits next to `vidar.exe` in
 a writable folder, that one is used instead (portable mode). Unknown keys are kept, so newer
-and older versions can share a file. Hand-edited values are clamped to safe ranges on load.
+and older versions can share a file, except settings older versions wrote that are now fixed
+in code (old gate and filter tuning, `dpdfnet_model` and the like): those are removed on load.
+Hand-edited values are clamped to safe ranges on load.
+
+| Key | Values | Default |
+|---|---|---|
+| `vad_threshold` | Strength: the gate's open threshold, 0.05–0.99 | `0.70` |
+| `mic_boost_db` | Microphone boost, 0–30 dB | `0` |
+| `auto_level` | Level quiet speech automatically | `false` |
+| `eq_preset` | Voice tone: `off`, `warm`, `clear`, `broadcast` or `custom` | `off` |
+| `eq_custom_db` | Custom tone, five band gains in dB (100 Hz, 300 Hz, 1 kHz, 3 kHz, 8 kHz), ±12 | `[0,0,0,0,0]` |
+| `denoise_engine` | `dpdfnet` (Voice HD) or `rnnoise` (Voice); anything else reads as `rnnoise` | `dpdfnet` |
+| `raw_capture` | Ask Windows for the mic signal without vendor "enhancements" | `false` |
+| `start_with_windows` | Start at sign-in | `false` |
+| `ui_theme` | `auto`, `light` or `dark` | `auto` |
+| `input_endpoint_id`, `input_device_name` | The chosen microphone (empty: the Windows default) | — |
+
+Written by the app, not meant to be edited: `version`, `is_swapped` and `original_mic_id`
+(crash recovery while the default mic is switched to the cable), `cable_capture_id` and
+`cable_render_id`.
 
 The cable's original names and icons are saved in `%ProgramData%\Vidar\endpoint-branding.tsv`
 before it is renamed, so uninstalling can put them back.

@@ -151,8 +151,10 @@ fn run(cfg: &Config, clip: &str) -> (Diff, f64) {
     let full = std::fs::read(golden_dir().join(cfg.name).join(format!("{clip}.f32")))
         .ok()
         .map(|b| {
-            b.chunks_exact(4)
-                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+            b.as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| f32::from_le_bytes(*c))
                 .collect::<Vec<f32>>()
         });
 
@@ -173,6 +175,7 @@ fn run(cfg: &Config, clip: &str) -> (Diff, f64) {
             leveler.as_mut(),
             Some(&mut ts),
             cfg.boost_db,
+            None,
         );
         let peak = f.iter().map(|x| f64::from(x.abs())).fold(0.0, f64::max);
         let rms = (f.iter().map(|&x| f64::from(x) * f64::from(x)).sum::<f64>() / FRAME_SIZE as f64)

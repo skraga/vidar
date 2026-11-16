@@ -93,12 +93,13 @@ sounds exactly like the live microphone.
 |---|---|---|---|
 | 1 | Rumble filter | High-pass that removes desk thumps, AC hum and handling noise below the voice | on, 80 Hz |
 | 2 | Pre-clip | Measures the input level, then gently rounds peaks above 75% so the model never sees hard clipping | always |
-| 3 | AI model | Removes noise from under the voice and estimates the probability that you are speaking | Voice: RNNoise |
+| 3 | AI model | Removes noise from under the voice and estimates the probability that you are speaking | Voice HD: DPDFNet (falls back to RNNoise) |
 | 4 | De-clicker | Dips sharp keyboard clicks and thumps by 6-8 dB with a 1 ms envelope, so the dip itself does not click | always |
 | 5 | Auto-level | Slowly raises quiet voices toward -24 dBFS, by up to +9 dB, at most 5 dB per second | off |
 | 6 | Gain | Output gain × mic boost (× 1.2 for built-in laptop mics) | 1.08 |
 | 7 | Gate | Turns the microphone down between phrases, so pauses stay quiet | always |
-| 8 | Limiter | Soft limit at 85% of full scale, so Vidar AI Microphone never clips | always |
+| 8 | Voice tone | Five-band equaliser (100 Hz, 300 Hz, 1 kHz, 3 kHz, 8 kHz, ±12 dB): a preset or a custom curve. After the model, so the model hears the natural voice | when not Off |
+| 9 | Limiter | Soft limit at 85% of full scale, so Vidar AI Microphone never clips | always |
 
 ### What changes between modes
 
@@ -118,6 +119,8 @@ and level are delayed to match DPDFNet's longer delay, so the same gate tuning w
 models.
 
 Voice HD has two model files: `dpdfnet2_48khz_hr` (default) and the larger `dpdfnet8_48khz_hr`.
+`cargo xtask fetch` downloads only the default; `cargo xtask fetch --all` also downloads the
+larger one. If the DPDFNet model or ONNX Runtime cannot load, Voice HD falls back to RNNoise.
 
 RNNoise is compiled in from C. On x86-64 it picks SSE4.1 or AVX2 network layers at run time,
 whichever the processor supports, and falls back to plain code otherwise.
@@ -202,6 +205,6 @@ and dropouts.
 
 Vidar always asks Windows for the smallest buffer the devices allow, and falls back to the
 regular shared-mode stream when a device cannot provide it (a format other than 48 kHz float,
-a driver without the newer Windows audio interface, or a Bluetooth headset). *Raw microphone signal* (off by default) asks Windows
-to skip the microphone driver's own effects, such as built-in noise suppression or automatic
-volume, which can work against Vidar's processing.
+a driver without the newer Windows audio interface, or a Bluetooth headset). *Raw microphone
+signal* (off by default) asks Windows to skip the microphone driver's own effects, such as
+built-in noise suppression or automatic volume, which can work against Vidar's processing.

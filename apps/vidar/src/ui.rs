@@ -285,7 +285,7 @@ fn segmented(
         );
         let resp = ui.interact(
             r,
-            ui.scope_id().with(("seg", label, i)),
+            ui.scope_id().with(("seg", options, i)),
             if enabled {
                 Sense::click()
             } else {
@@ -354,13 +354,16 @@ const TIP_MIC: Tip = ("Microphone", "The microphone Vidar listens to. \"Windows 
 const TIP_AUTO_LEVEL: Tip = ("Auto level", "Slowly makes quiet speech louder, by up to 9 dB. It never makes loud speech louder and holds still while you are silent, so background noise is not raised. Turn it on if people say you are too quiet.");
 const TIP_FINE: Tip = ("Fine-tune strength", "The same setting as Strength on the Home tab, in finer steps. Further right, Vidar must be more sure you are talking before it turns your microphone back up between words: less noise slips through, but very soft words may be cut. Further left keeps every word but lets more noise through in pauses.");
 const TIP_LEVEL: Tip = ("How loud apps hear you", "Your voice after Vidar, as apps receive it. Talk normally for a few seconds. Aim for the green zone: in the grey zone people may struggle to hear you, in the red zone you may sound harsh or distorted. The white mark is where your speech usually sits.");
-const TIP_RESET: Tip = ("Reset to recommended", "Boost off, Auto level off, Rumble filter on, strength Balanced.");
+const TIP_RESET: Tip = (
+    "Reset to recommended",
+    "Boost off, Auto level off, Rumble filter on, strength Balanced.",
+);
 const TIP_AUTOSTART: Tip = (
     "Start with Windows",
     "Starts Vidar in the tray when you sign in. Noise cancellation stays off until you turn it on.",
 );
 const TIP_RAW: Tip = ("Raw microphone signal", "Gives Vidar your microphone before Windows and the microphone's driver apply their own effects, such as built-in noise suppression or automatic volume. Usually sounds more natural with Vidar; turn it off if your microphone sounds worse. Audio restarts briefly if Vidar is on.");
-const TIP_INSTALL: Tip = ("Virtual microphone", "Vidar AI Microphone runs on the free VB-Audio Virtual Cable driver. Installing it asks Windows for permission once; your speakers and microphone stay as they are.");
+const TIP_INSTALL: Tip = ("Virtual microphone", "Vidar AI Microphone runs on the VB-CABLE driver by VB-Audio (donationware). Installing it asks Windows for permission once; your speakers and microphone stay as they are.");
 const TIP_REINSTALL: Tip = ("Reinstall", "Installs the VB-Audio driver again. Use it if Vidar AI Microphone stopped working, for example after a Windows update.");
 const TIP_UNINSTALL: Tip = ("Uninstall", "Turns Vidar off, gives your own microphone back to Windows and removes the VB-Audio driver. Apps that were set to Vidar AI Microphone switch to another microphone. Windows may ask to restart.");
 const TIP_LOGS: Tip = (
@@ -385,7 +388,7 @@ const MODE_HELP: Tip = (
 );
 const MODE_TIPS: [Tip; 2] = [
     ("Voice", "Light AI model (RNNoise). About 30 ms of delay and a few percent of one processor core. For games, voice chat and laptops."),
-    ("Voice HD", "Larger AI model (DPDFNet): cleaner, more natural voice in loud or echoing rooms. About 60 ms of delay and about four times the processor work of Voice. For calls, meetings and recordings."),
+    ("Voice HD", "Larger AI model (DPDFNet): cleaner, more natural voice in loud or echoing rooms. About 60 ms of delay and about five times the processor work of Voice. For calls, meetings and recordings."),
 ];
 const BOOST_HELP: Tip = ("Boost", "Makes your voice louder for quiet microphones, after the noise is removed. Lower it if people say you are too loud or distorted.");
 const BOOST_TIPS: [Tip; 4] = [
@@ -406,6 +409,57 @@ const BOOST_TIPS: [Tip; 4] = [
         "Much louder. For very quiet microphones; loud speech may distort.",
     ),
 ];
+const TONE_HELP: Tip = ("Voice tone", "Shapes how your voice sounds to others, after the noise is removed. Pick a tone, or drag the points on the curve to make your own. Double-click a point to reset it.");
+const TONE_PRESETS: [(&str, &str); 5] = [
+    ("off", "Off"),
+    ("warm", "Warm"),
+    ("clear", "Clear"),
+    ("broadcast", "Broadcast"),
+    ("custom", "Custom"),
+];
+const TONE_TIPS: [Tip; 5] = [
+    (
+        "Off",
+        "Your voice exactly as the microphone and the noise model deliver it.",
+    ),
+    (
+        "Warm",
+        "Fuller and softer: more body, less edge and hiss. Good for thin headset mics.",
+    ),
+    (
+        "Clear",
+        "Easier to understand: less boom and mud, more presence. Good for boomy or muffled mics.",
+    ),
+    (
+        "Broadcast",
+        "Radio-style: a little weight, less mud, a forward voice.",
+    ),
+    ("Custom", "Your own curve. Drag the points to change it."),
+];
+/// What each band does, for the point tooltips.
+const TONE_BANDS: [(&str, &str); vidar_dsp::EQ_BANDS] = [
+    (
+        "Body",
+        "100 Hz and below. Up: fuller, deeper. Down: less boom and rumble.",
+    ),
+    (
+        "Mud",
+        "Around 300 Hz. Down: cleaner, less boxy. Up: thicker.",
+    ),
+    (
+        "Nasal",
+        "Around 1 kHz. Down: less honky or nasal. Up: more cutting.",
+    ),
+    (
+        "Presence",
+        "Around 3 kHz. Up: clearer, more forward. Down: softer, less harsh.",
+    ),
+    (
+        "Air",
+        "8 kHz and above. Up: brighter, crisper. Down: less hiss and sharp S sounds.",
+    ),
+];
+
 const THEME_TIPS: [Tip; 3] = [
     (
         "Auto",
@@ -416,7 +470,7 @@ const THEME_TIPS: [Tip; 3] = [
 ];
 const COMPARE_HELP: Tip = (
     "Compare",
-    "Every row is your recording with a different mode and strength. Each row shows how much quieter your pauses got and whether your voice was kept. Delay and processor use depend only on the mode, so they appear once in each mode's header.",
+    "Every tile is your recording with a different mode (row) and strength (column). Each tile shows how much quieter your pauses got and whether your voice was kept; ★ marks the best one for you and a dot the one in use. Delay and processor use depend only on the mode, so they appear next to its name.",
 );
 const METRIC_TIPS: [Tip; 4] = [
     ("Noise removed", "How much quieter your pauses became. Every 10 dB sounds about half as loud; 20 dB or more is very clean."),
@@ -464,30 +518,6 @@ fn cpu_count() -> usize {
         .unwrap_or(1)
 }
 
-/// Group header in the comparison list: the mode name with its delay and CPU, which are the
-/// same for every strength of that mode.
-fn mode_header(ui: &mut egui::Ui, p: &Pal, var: &VariantView) {
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        ui.add_space(8.0);
-        section(ui, p, var.option.mode);
-        if var.unavailable.is_none() {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.add_space(8.0);
-                let cpu = var.cpu_percent;
-                ui.label(RichText::new(cpu_text(cpu)).small().color(p.muted)).on_hover_ui(|ui| {
-                    tip_ui(ui, METRIC_TIPS[3]);
-                    let n = cpu_count();
-                    ui.label(RichText::new(format!("This PC has {n} logical cores, so Task Manager would show about {:.1}% for Vidar.", cpu / n as f64)).size(12.5));
-                });
-                ui.label(RichText::new("·").small().color(p.muted));
-                ui.label(RichText::new(format!("{:.0} ms delay", var.delay_ms)).small().color(p.muted))
-                    .on_hover_ui(|ui| tip_ui(ui, METRIC_TIPS[2]));
-            });
-        }
-    });
-}
-
 fn badge(ui: &mut egui::Ui, bg: Color32, fg: Color32, text: &str) -> egui::Response {
     egui::Frame::new()
         .fill(bg)
@@ -529,7 +559,18 @@ fn power_button(
 
     // The circle of bars.
     let dark = ui.visuals().dark_mode;
-    draw_voice_ring(painter, p, c, d / 2.0 - 5.0, t, voice, ring, time, motion, dark);
+    draw_voice_ring(
+        painter,
+        p,
+        c,
+        d / 2.0 - 5.0,
+        t,
+        voice,
+        ring,
+        time,
+        motion,
+        dark,
+    );
     if busy {
         let pts: Vec<_> = (0..=24)
             .map(|k| {
@@ -552,7 +593,16 @@ fn power_button(
     painter.circle_stroke(c, d / 2.0 - 10.0, Stroke::new(1.0, p.border));
 
     // The Vidar logo in place of a power glyph.
-    draw_logo(painter, p, c - vec2(0.0, 8.0), 48.0, t, bands, busy.then_some(time), time);
+    draw_logo(
+        painter,
+        p,
+        c - vec2(0.0, 8.0),
+        48.0,
+        t,
+        bands,
+        busy.then_some(time),
+        time,
+    );
     let icon = if active { p.accent } else { p.muted };
     let label = match state {
         RunState::Running => "ON",
@@ -582,6 +632,328 @@ fn power_button(
         )
     });
     clicked && state != RunState::Stopping
+}
+
+/// Radio dot for a selectable version; little moving bars while it is the one playing.
+fn play_indicator(
+    painter: &egui::Painter,
+    ui: &egui::Ui,
+    color: Color32,
+    c: egui::Pos2,
+    selected: bool,
+    playing: bool,
+    idle: Color32,
+) {
+    if playing {
+        let time = ui.input(|i| i.time) as f32;
+        for k in 0..3 {
+            let h = 4.0 + 7.0 * (0.5 + 0.5 * (time * 7.0 + k as f32 * 1.9).sin());
+            let x = c.x - 5.0 + k as f32 * 5.0;
+            painter.line_segment(
+                [pos2(x, c.y + 5.5), pos2(x, c.y + 5.5 - h)],
+                Stroke::new(3.0, color),
+            );
+        }
+        ui.ctx().request_repaint();
+    } else if selected {
+        painter.circle_stroke(c, 6.0, Stroke::new(1.5, color));
+        painter.circle_filled(c, 3.2, color);
+    } else if idle != Color32::TRANSPARENT {
+        painter.circle_stroke(c, 6.0, Stroke::new(1.5, idle));
+    }
+}
+
+/// [`tip_ui`] for text built at run time.
+fn tip_ui_owned(ui: &mut egui::Ui, title: &str, body: &str) {
+    ui.set_max_width(260.0);
+    ui.label(RichText::new(title).font(semi(13.0)));
+    ui.label(RichText::new(body).size(12.5));
+}
+
+/// The voice tone graph: the equaliser's response from 50 Hz to 16 kHz (±12 dB), with one
+/// point per band and the band names and gains underneath. Anywhere in a band's column drags
+/// its point up and down (snapping to 0.5 dB); double-click resets it.
+/// Returns the new gains while dragging (`false`) and once more when the drag ends (`true`).
+fn tone_curve(
+    ui: &mut egui::Ui,
+    p: &Pal,
+    gains: [f64; vidar_dsp::EQ_BANDS],
+    active: bool,
+) -> Option<([f64; vidar_dsp::EQ_BANDS], bool)> {
+    const F_MIN: f64 = 50.0;
+    const F_MAX: f64 = 16_000.0;
+    const PLOT_H: f32 = 156.0;
+    const LABELS_H: f32 = 36.0;
+    const AXIS_W: f32 = 30.0;
+    let max_db = vidar_dsp::EQ_MAX_DB;
+    // The view reaches a little past the ±12 dB the points can go, so the curve between
+    // points is never cut off.
+    let view_db = max_db + 3.0;
+    let (outer, _) = ui.allocate_exact_size(
+        vec2(ui.available_width(), PLOT_H + LABELS_H),
+        Sense::hover(),
+    );
+    let frame = Rect::from_min_max(
+        pos2(outer.min.x + AXIS_W, outer.min.y),
+        pos2(outer.max.x, outer.min.y + PLOT_H),
+    );
+    // Inner plot: keep the end points and their value bubbles off the frame's edges.
+    let plot = frame.shrink2(vec2(18.0, 12.0));
+    let painter = ui.painter_at(outer);
+    let dim = |c: Color32| if active { c } else { c.gamma_multiply(0.55) };
+    painter.rect_filled(frame, 10.0, p.surface2);
+
+    let x_of =
+        |f: f64| plot.left() + ((f / F_MIN).ln() / (F_MAX / F_MIN).ln()) as f32 * plot.width();
+    let y_of = |db: f64| plot.center().y - (db / view_db) as f32 * plot.height() / 2.0;
+    let db_of = |y: f32| {
+        (f64::from(plot.center().y - y) / f64::from(plot.height() / 2.0) * view_db)
+            .clamp(-max_db, max_db)
+    };
+
+    // Which band the pointer is over (or dragging), found before drawing so the column can
+    // be highlighted under the curve.
+    let ids: [egui::Id; vidar_dsp::EQ_BANDS] =
+        std::array::from_fn(|i| ui.scope_id().with(("tone", i)));
+    let xs: [f32; vidar_dsp::EQ_BANDS] = std::array::from_fn(|i| x_of(vidar_dsp::EQ_POINTS_HZ[i]));
+    // Hit columns split the plot halfway between neighbouring points, so every spot on the
+    // graph belongs to one band and the narrow high-frequency gaps are still easy to grab.
+    let cols: [Rect; vidar_dsp::EQ_BANDS] = std::array::from_fn(|i| {
+        let l = if i == 0 {
+            frame.left()
+        } else {
+            (xs[i - 1] + xs[i]) / 2.0
+        };
+        let r = if i + 1 == vidar_dsp::EQ_BANDS {
+            frame.right()
+        } else {
+            (xs[i] + xs[i + 1]) / 2.0
+        };
+        Rect::from_x_y_ranges(l..=r, outer.y_range())
+    });
+    let resps: [egui::Response; vidar_dsp::EQ_BANDS] =
+        std::array::from_fn(|i| ui.interact(cols[i], ids[i], Sense::click_and_drag()));
+    let hot: Option<usize> = resps
+        .iter()
+        .position(|r| r.dragged())
+        .or_else(|| resps.iter().position(|r| r.hovered()));
+
+    if let Some(h) = hot {
+        let band = Rect::from_center_size(
+            pos2(xs[h], frame.center().y),
+            vec2(34.0, frame.height() - 8.0),
+        );
+        painter.rect_filled(band, 8.0, p.accent.gamma_multiply(0.07));
+    }
+
+    // Grid: a line every 3 dB (labelled every 6) and the usual log-frequency lines
+    // (50, 60, ... 100, 200, ... 1k, 2k, ...), with 100 Hz, 1 kHz and 10 kHz labelled.
+    let inner_x = frame.x_range().shrink(6.0);
+    let inner_y = frame.y_range().shrink(6.0);
+    let fine = p.border.gamma_multiply(0.22);
+    let major = p.border.gamma_multiply(0.5);
+    for k in -5..=5 {
+        let db = f64::from(k) * 3.0;
+        let y = y_of(db);
+        let labelled = k % 2 == 0 && db.abs() <= max_db;
+        let color = if k == 0 {
+            p.border
+        } else if labelled {
+            major
+        } else {
+            fine
+        };
+        painter.hline(inner_x, y, Stroke::new(1.0, color));
+        if labelled {
+            painter.text(
+                pos2(frame.left() - 6.0, y),
+                Align2::RIGHT_CENTER,
+                if k == 0 {
+                    "0".to_string()
+                } else {
+                    format!("{db:+.0}")
+                },
+                FontId::proportional(10.0),
+                p.muted.gamma_multiply(if k == 0 { 1.0 } else { 0.75 }),
+            );
+        }
+    }
+    for decade in [10.0, 100.0, 1_000.0, 10_000.0] {
+        for m in 1..10 {
+            let f = decade * f64::from(m);
+            if !(F_MIN..=F_MAX).contains(&f) {
+                continue;
+            }
+            let x = x_of(f);
+            painter.vline(
+                x,
+                inner_y,
+                Stroke::new(1.0, if m == 1 { major } else { fine }),
+            );
+            if m == 1 {
+                painter.text(
+                    pos2(x + 3.0, frame.top() + 4.0),
+                    Align2::LEFT_TOP,
+                    if f >= 1_000.0 {
+                        format!("{}k", f / 1_000.0)
+                    } else {
+                        format!("{f}")
+                    },
+                    FontId::proportional(9.5),
+                    p.muted.gamma_multiply(0.7),
+                );
+            }
+        }
+    }
+
+    // The response curve, with a soft fill towards 0 dB.
+    let mut eq = vidar_dsp::VoiceEq::new(48_000.0);
+    eq.set_gains(gains);
+    let line = if active {
+        p.accent
+    } else {
+        p.muted.gamma_multiply(0.7)
+    };
+    let n = 128;
+    let pts: Vec<egui::Pos2> = (0..=n)
+        .map(|k| {
+            let f = F_MIN * (F_MAX / F_MIN).powf(k as f64 / n as f64);
+            pos2(x_of(f), y_of(eq.response_db(f).clamp(-max_db, max_db)))
+        })
+        .collect();
+    if active {
+        let zero = y_of(0.0);
+        let fill = line.gamma_multiply(0.12);
+        let mut mesh = egui::Mesh::default();
+        let mut tri = |a: egui::Pos2, b: egui::Pos2, c: egui::Pos2| {
+            let base = mesh.vertices.len() as u32;
+            for v in [a, b, c] {
+                mesh.colored_vertex(v, fill);
+            }
+            mesh.add_triangle(base, base + 1, base + 2);
+        };
+        for w in pts.windows(2) {
+            let (a, b) = (w[0], w[1]);
+            let (za, zb) = (pos2(a.x, zero), pos2(b.x, zero));
+            if (a.y - zero) * (b.y - zero) < 0.0 {
+                // The segment crosses 0 dB: fill each side up to the crossing point.
+                let t = (zero - a.y) / (b.y - a.y);
+                let m = pos2(a.x + t * (b.x - a.x), zero);
+                tri(a, m, za);
+                tri(m, b, zb);
+            } else {
+                tri(a, b, zb);
+                tri(a, zb, za);
+            }
+        }
+        painter.add(mesh);
+    }
+    painter.add(egui::Shape::line(pts, Stroke::new(2.0, line)));
+
+    // Points, band labels and interaction.
+    let mut out = None;
+    for (i, resp) in resps.into_iter().enumerate() {
+        let x = xs[i];
+        let is_hot = hot == Some(i);
+        if resp.hovered() || resp.dragged() {
+            ui.ctx().set_cursor_icon(if resp.dragged() {
+                egui::CursorIcon::ResizeVertical
+            } else {
+                egui::CursorIcon::Grab
+            });
+        }
+        if resp.dragged() {
+            if let Some(pos) = resp.interact_pointer_pos() {
+                let mut g = gains;
+                g[i] = (db_of(pos.y) * 2.0).round() / 2.0;
+                if g != gains {
+                    out = Some((g, false));
+                }
+            }
+        }
+        if resp.drag_stopped() {
+            out = Some((out.map_or(gains, |(g, _)| g), true));
+        }
+        if resp.double_clicked() {
+            let mut g = gains;
+            g[i] = 0.0;
+            out = Some((g, true));
+        }
+
+        let g = out.map_or(gains[i], |(g, _): ([f64; vidar_dsp::EQ_BANDS], bool)| g[i]);
+        let c = pos2(x, y_of(g));
+        let r = if is_hot { 7.5 } else { 6.0 };
+        let fill = if active { p.accent } else { p.muted };
+        painter.circle_filled(c, r + 2.5, p.surface2);
+        painter.circle_filled(c, r, fill);
+        painter.circle_filled(
+            c,
+            r * 0.38,
+            p.surface2.gamma_multiply(if active { 0.9 } else { 0.6 }),
+        );
+        if is_hot {
+            painter.circle_stroke(c, r + 4.0, Stroke::new(1.5, p.accent.gamma_multiply(0.45)));
+            // Value bubble on the side of the point with more room.
+            let text = db_text(g);
+            let galley = painter.layout_no_wrap(text, semi(11.0), p.on_accent);
+            let size = galley.size() + vec2(12.0, 4.0);
+            let dy = if c.y > plot.center().y {
+                -(r + 8.0 + size.y / 2.0)
+            } else {
+                r + 8.0 + size.y / 2.0
+            };
+            let mut bubble = Rect::from_center_size(c + vec2(0.0, dy), size);
+            bubble = bubble.translate(vec2(
+                (frame.left() + 2.0 - bubble.left()).max(0.0)
+                    + (frame.right() - 2.0 - bubble.right()).min(0.0),
+                0.0,
+            ));
+            painter.rect_filled(bubble, 6.0, if active { p.accent } else { p.muted });
+            painter.galley(bubble.center() - galley.size() / 2.0, galley, p.on_accent);
+        }
+
+        // Under the plot: what the band is, and its current gain.
+        let (name, what) = TONE_BANDS[i];
+        let name_color = if is_hot {
+            p.text
+        } else {
+            dim(p.text.gamma_multiply(0.85))
+        };
+        painter.text(
+            pos2(x, frame.bottom() + 11.0),
+            Align2::CENTER_CENTER,
+            name,
+            semi(11.5),
+            name_color,
+        );
+        let value_color = if g == 0.0 {
+            dim(p.muted)
+        } else {
+            dim(p.accent)
+        };
+        painter.text(
+            pos2(x, frame.bottom() + 26.0),
+            Align2::CENTER_CENTER,
+            db_text(g),
+            FontId::proportional(10.5),
+            value_color,
+        );
+        if resp.hovered() && !resp.dragged() {
+            resp.on_hover_ui(|ui| tip_ui(ui, (name, what)));
+        }
+    }
+    out
+}
+
+/// Gain as shown on the tone graph: "0 dB", "+3.5 dB", "-2 dB".
+fn db_text(db: f64) -> String {
+    if db == 0.0 {
+        "0 dB".into()
+    } else if db.fract() == 0.0 {
+        format!("{db:+.0} dB")
+    } else {
+        format!("{db:+.1} dB")
+    }
 }
 
 /// Primary (filled) button.
@@ -662,12 +1034,19 @@ fn draw_logo(
         let h = h.clamp(0.02, 0.85) * half;
         let [r, g, b] = vidar_brand::neon(bx);
         let neon = Color32::from_rgb(r as u8, g as u8, b as u8);
-        let col = p.muted.lerp_to_gamma(neon, on).gamma_multiply((0.35 + 0.65 * bright) * (0.8 + 0.2 * on));
+        let col = p
+            .muted
+            .lerp_to_gamma(neon, on)
+            .gamma_multiply((0.35 + 0.65 * bright) * (0.8 + 0.2 * on));
         let x = centre.x + bx * half;
         let bar = Rect::from_min_max(pos2(x - w, centre.y - h - w), pos2(x + w, centre.y + h + w));
         if on > 0.0 {
             for (grow, alpha) in [(3.0, 0.10), (1.6, 0.16)] {
-                painter.rect_filled(bar.expand(w * grow), w * (1.0 + grow), neon.gamma_multiply(alpha * on * bright));
+                painter.rect_filled(
+                    bar.expand(w * grow),
+                    w * (1.0 + grow),
+                    neon.gamma_multiply(alpha * on * bright),
+                );
             }
         }
         painter.rect_filled(bar, w, col);
@@ -702,7 +1081,11 @@ fn ring_target(k: usize, bands: &[f32; vidar_dsp::BANDS], time: f32) -> f32 {
     let (p1, p2) = (bar_rand(k, 5) * 6.3, bar_rand(k, 6) * 6.3);
     let sensitivity = 0.55 + 0.45 * (time * w1 + p1).sin() * (time * w2 + p2).sin().abs();
     // About one bar in four is extra sensitive, so peaks stand out above their neighbours.
-    let peak = if bar_rand(k, 7) > 0.75 { 1.8 } else { 0.8 + 0.5 * bar_rand(k, 10) };
+    let peak = if bar_rand(k, 7) > 0.75 {
+        1.8
+    } else {
+        0.8 + 0.5 * bar_rand(k, 10)
+    };
     1.0 - (-2.6 * mix * sensitivity * peak).exp()
 }
 
@@ -773,7 +1156,8 @@ fn draw_voice_ring(
     let colour = |a: f32, strength: f32| -> Color32 {
         let [cr, cg, cb] = vidar_brand::neon(ring_hue(a, motion.flow));
         let neon = Color32::from_rgb(cr as u8, cg as u8, cb as u8);
-        grey.lerp_to_gamma(neon, on).gamma_multiply(strength.clamp(0.0, 1.0))
+        grey.lerp_to_gamma(neon, on)
+            .gamma_multiply(strength.clamp(0.0, 1.0))
     };
     let clear = |a: f32| colour(a, 0.0);
 
@@ -830,15 +1214,30 @@ fn draw_voice_ring(
         let bright = 0.6 + 0.4 * len.max(0.4 * voice);
         quad(
             &mut mesh,
-            [c + dir(a0) * r, c + dir(a1) * r, c + dir(a1) * tip, c + dir(a0) * tip],
-            [colour(a0, 0.55 * bright), colour(a1, 0.55 * bright), colour(a1, bright), colour(a0, bright)],
+            [
+                c + dir(a0) * r,
+                c + dir(a1) * r,
+                c + dir(a1) * tip,
+                c + dir(a0) * tip,
+            ],
+            [
+                colour(a0, 0.55 * bright),
+                colour(a1, 0.55 * bright),
+                colour(a1, bright),
+                colour(a0, bright),
+            ],
         );
         // Fringe: fades out past the tip (a glow in the dark theme, a soft edge in light).
         let fringe = if dark { 2.0 + 6.0 * len * on } else { 1.2 };
         let edge = if dark { 0.45 * bright } else { 0.6 * bright };
         quad(
             &mut mesh,
-            [c + dir(a0) * tip, c + dir(a1) * tip, c + dir(a1) * (tip + fringe), c + dir(a0) * (tip + fringe)],
+            [
+                c + dir(a0) * tip,
+                c + dir(a1) * tip,
+                c + dir(a1) * (tip + fringe),
+                c + dir(a0) * (tip + fringe),
+            ],
             [colour(a0, edge), colour(a1, edge), clear(a1), clear(a0)],
         );
     }
@@ -940,14 +1339,6 @@ fn fmt_secs(s: f64) -> String {
     format!("{m:.0}:{:04.1}", s - m * 60.0)
 }
 
-/// Matches the worker's playback order: the original first, then the variants.
-fn track_index(t: Track) -> usize {
-    match t {
-        Track::Original => 0,
-        Track::Variant(i) => i + 1,
-    }
-}
-
 fn strength_index(t: f64) -> Option<usize> {
     STRENGTH.iter().position(|(_, v)| (v - t).abs() < 0.005)
 }
@@ -1003,10 +1394,11 @@ impl VidarWindow {
         {
             ui.vertical_centered(|ui| {
                 // A pill-shaped tab bar: a sunken track with the active tab raised on it.
-                const TABS: [(Tab, &str, &str); 3] = [
+                const TABS: [(Tab, &str, &str); 4] = [
                     (Tab::Home, "Home", "Turn noise cancellation on or off, and pick your microphone, mode and strength"),
                     (Tab::Test, "Test", "Record yourself once and compare every mode and strength"),
                     (Tab::Settings, "Settings", "Appearance, microphone options, apps and Windows, troubleshooting"),
+                    (Tab::About, "About", "Version, licence and the components Vidar is built on"),
                 ];
                 let (seg_w, h, pad) = (76.0, 30.0, 3.0);
                 let (track, _) = ui.allocate_exact_size(vec2(seg_w * TABS.len() as f32 + pad * 2.0, h), Sense::hover());
@@ -1087,7 +1479,7 @@ impl VidarWindow {
                         .font(semi(16.0))
                         .color(p.text),
                 );
-                ui.label(RichText::new("Apps get your clean voice from Vidar AI Microphone, which needs the free VB-Audio Virtual Cable driver.").color(p.muted));
+                ui.label(RichText::new("Apps get your clean voice from Vidar AI Microphone, which needs the VB-CABLE driver by VB-Audio (donationware).").color(p.muted));
                 ui.add_space(4.0);
                 if primary(ui, p, "Install virtual microphone", ui.available_width()) {
                     self.handle.send(Cmd::InstallDriver);
@@ -1133,7 +1525,11 @@ impl VidarWindow {
         let talking = voice.max(1.5 * loudness).min(1.0);
         self.ring_flow += dt * (0.4 + 2.6 * talking);
         self.ring_pulse += dt * (0.35 + 0.65 * talking);
-        let motion = RingMotion { flow: self.ring_flow, pulse: self.ring_pulse, loudness };
+        let motion = RingMotion {
+            flow: self.ring_flow,
+            pulse: self.ring_pulse,
+            loudness,
+        };
         if power_button(ui, p, v.state, voice, &self.logo_bands, &self.ring, motion) {
             if v.cable_installed || v.state != RunState::Stopped {
                 self.handle.send(Cmd::Toggle);
@@ -1344,7 +1740,8 @@ impl VidarWindow {
         });
     }
 
-    /// The scrolling part of the Test tab: the comparison list.
+    /// The scrolling part of the Test tab: the comparison, then voice tone to shape the
+    /// result while listening.
     fn test_list(&mut self, ui: &mut egui::Ui, p: &Pal, v: &View) {
         let t = &v.test;
         let playing = matches!(t.phase, TestPhase::Playing(_));
@@ -1353,6 +1750,8 @@ impl VidarWindow {
             && t.phase != TestPhase::Analyzing;
         if !ready {
             ui.label(RichText::new(format!("Up to {MAX_TEST_SECONDS:.0} seconds. Plays on your speakers; nothing is saved to disk")).small().color(p.muted));
+            ui.add_space(8.0);
+            self.tone_card(ui, p, v);
             return;
         }
 
@@ -1369,43 +1768,20 @@ impl VidarWindow {
                     ui.label(RichText::new("No speech found in this recording").font(semi(13.0)).color(p.text));
                     ui.label(RichText::new("You can still hear how each mode removes your background noise. To compare how your voice sounds, record again and talk normally.").small().color(p.muted));
                 });
+                ui.add_space(6.0);
             }
-            self.compare_row(
-                ui,
-                p,
-                v,
-                Track::Original,
-                playing,
-                None,
-                false,
-                t.speech_detected,
-            );
-            // Rows grouped by mode; delay and CPU belong to the mode, so they sit in its header.
-            let mut last_mode = "";
-            for i in 0..t.variants.len() {
-                let var = &t.variants[i];
-                if var.option.mode != last_mode {
-                    last_mode = var.option.mode;
-                    mode_header(ui, p, var);
-                }
-                self.compare_row(
-                    ui,
-                    p,
-                    v,
-                    Track::Variant(i),
-                    playing,
-                    Some(var),
-                    best == Some(i),
-                    t.speech_detected,
-                );
-            }
+            self.compare_grid(ui, p, v, playing, best);
         });
         ui.add_space(6.0);
         ui.label(
-            RichText::new("Click a row to hear it. Space plays or stops, Up and Down switch rows")
-                .small()
-                .color(p.muted),
+            RichText::new(
+                "Click a tile to hear it. Space plays or stops, Up and Down switch versions",
+            )
+            .small()
+            .color(p.muted),
         );
+        ui.add_space(8.0);
+        self.tone_card(ui, p, v);
     }
 
     /// Start playback of the selected version from the cursor (inside the loop, if any).
@@ -1765,166 +2141,400 @@ impl VidarWindow {
         });
     }
 
-    /// One row in the comparison list. Clicking it plays that version (or switches to it).
-    #[allow(clippy::too_many_arguments)]
-    fn compare_row(
+    /// The comparison: the original on its own row, then one row per mode with a tile per
+    /// strength. Clicking a tile plays that version (or switches to it while playing).
+    fn compare_grid(
         &mut self,
         ui: &mut egui::Ui,
         p: &Pal,
         v: &View,
-        track: Track,
         playing: bool,
-        var: Option<&VariantView>,
-        best: bool,
-        speech: bool,
+        best: Option<usize>,
     ) {
-        let selected = self.selected == track;
-        let available = var.is_none_or(|x| x.unavailable.is_none());
-        let current = var.is_some_and(|x| is_current(&x.option, v));
-        // Hit-test the whole row with last frame's rect, registered before the contents so
-        // the Use button inside keeps its own clicks.
-        let id = ui.scope_id().with(("row", track_index(track)));
-        let prev: Option<Rect> = ui.data(|d| d.get_temp(id));
-        let row = prev.map(|r| {
-            ui.interact(
-                r,
-                id,
-                if available {
-                    Sense::click()
-                } else {
-                    Sense::hover()
-                },
-            )
-        });
-        let hovered = row.as_ref().is_some_and(|r| r.hovered()) && available;
-        let fill = if selected {
-            p.surface2
-        } else if hovered {
-            p.surface2.gamma_multiply(0.5)
-        } else {
-            Color32::TRANSPARENT
-        };
-        let frame = egui::Frame::new()
-            .fill(fill)
-            .corner_radius(10)
-            .inner_margin(egui::Margin::symmetric(8, 6));
-        let shown = frame.show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                // Indicator: equaliser bars while this version is heard, a radio dot otherwise.
-                let (r, _) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::hover());
-                let painter = ui.painter();
-                if selected && playing {
-                    let time = ui.input(|i| i.time) as f32;
-                    for k in 0..3 {
-                        let h = 4.0 + 8.0 * (0.5 + 0.5 * (time * 7.0 + k as f32 * 1.9).sin());
-                        let x = r.left() + 4.0 + k as f32 * 5.0;
-                        painter.line_segment([pos2(x, r.center().y + 6.0), pos2(x, r.center().y + 6.0 - h)], Stroke::new(3.0, p.accent));
-                    }
-                } else if selected {
-                    painter.circle_stroke(r.center(), 6.5, Stroke::new(1.5, p.accent));
-                    painter.circle_filled(r.center(), 3.5, p.accent);
-                } else {
-                    painter.circle_stroke(r.center(), 6.5, Stroke::new(1.5, if available { p.border } else { p.border.gamma_multiply(0.5) }));
-                }
+        let t = &v.test;
+        const LABEL_W: f32 = 92.0;
+        const GAP: f32 = 6.0;
+        const TILE_H: f32 = 52.0;
 
-                // Leave room on the right for the Use button so the text never runs under it.
-                let text_w = (ui.available_width() - 64.0).max(140.0);
-                ui.allocate_ui(vec2(text_w, 0.0), |ui| {
-                    ui.vertical(|ui| {
-                        ui.horizontal_wrapped(|ui| {
-                            // Under a mode header the row only needs the strength.
-                            let name = match var {
-                                None => "Original".to_string(),
-                                Some(x) => x.option.strength.to_string(),
-                            };
-                            ui.label(RichText::new(name).font(semi(13.5)).color(if available { p.text } else { p.muted }));
-                            if best {
-                                badge(ui, p.accent, p.on_accent, "Best for you").on_hover_ui(|ui| tip_ui(ui, ("Best for you", "Removes the most noise from your recording without making your voice noticeably quieter.")));
-                            }
-                            if current {
-                                badge(ui, p.border, p.text, "Current").on_hover_ui(|ui| tip_ui(ui, ("Current", "The mode and strength you are using now.")));
-                            }
-                        });
-                        match var {
-                            None => {
-                                ui.label(RichText::new("Your microphone as recorded").small().color(p.muted));
-                            }
-                            Some(x) if x.unavailable.is_some() => {
-                                ui.label(RichText::new("Not available on this PC").small().color(p.warn)).on_hover_ui(|ui| {
-                                    ui.set_max_width(260.0);
-                                    ui.label(RichText::new("Not available").font(semi(13.0)));
-                                    ui.label(RichText::new(x.unavailable.clone().unwrap_or_default()).size(12.5));
-                                });
-                            }
-                            Some(x) => {
-                                ui.horizontal_wrapped(|ui| {
-                                    ui.spacing_mut().item_spacing.x = 10.0;
-                                    // Noise removed, as a small bar out of 40 dB.
-                                    let (bar, bresp) = ui.allocate_exact_size(vec2(46.0, 6.0), Sense::hover());
-                                    let painter = ui.painter();
-                                    painter.rect_filled(bar, 3.0, p.border);
-                                    let mut fill = bar;
-                                    fill.set_width(bar.width() * (x.noise_removed_db / 40.0).clamp(0.0, 1.0) as f32);
-                                    painter.rect_filled(fill, 3.0, p.accent);
-                                    bresp.on_hover_ui(|ui| tip_ui(ui, METRIC_TIPS[0]));
-                                    ui.label(
-                                        RichText::new(if x.noise_removed_db >= 60.0 { "noise -60+ dB".to_string() } else { format!("noise -{:.0} dB", x.noise_removed_db) })
-                                            .small()
-                                            .color(p.text),
-                                    )
-                                    .on_hover_ui(|ui| tip_ui(ui, METRIC_TIPS[0]));
-                                    // Voice: a plain verdict unless it is actually being cut.
-                                    if speech {
-                                        let (text, color) = if x.voice_change_db < -3.0 {
-                                            (format!("voice {:+.0} dB", x.voice_change_db), p.warn)
-                                        } else {
-                                            ("voice intact".to_string(), p.muted)
-                                        };
-                                        ui.label(RichText::new(text).small().color(color)).on_hover_ui(|ui| {
-                                            tip_ui(ui, METRIC_TIPS[1]);
-                                            ui.label(RichText::new(format!("Measured: {:+.1} dB", x.voice_change_db)).size(12.0));
-                                        });
-                                    }
-                                });
-                            }
-                        }
-                    });
+        // Original.
+        let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 38.0), Sense::click());
+        let selected = self.selected == Track::Original;
+        let painter = ui.painter().clone();
+        painter.rect_filled(
+            r,
+            10.0,
+            if selected {
+                p.blue.gamma_multiply(0.14)
+            } else if resp.hovered() {
+                p.surface2
+            } else {
+                p.surface2.gamma_multiply(0.55)
+            },
+        );
+        if selected {
+            painter.rect_stroke(r, 10.0, Stroke::new(1.5, p.blue), StrokeKind::Inside);
+        }
+        let ind = pos2(r.left() + 18.0, r.center().y);
+        play_indicator(
+            &painter,
+            ui,
+            p.blue,
+            ind,
+            selected,
+            selected && playing,
+            p.border,
+        );
+        painter.text(
+            pos2(r.left() + 34.0, r.center().y),
+            Align2::LEFT_CENTER,
+            "Original",
+            semi(13.5),
+            p.text,
+        );
+        painter.text(
+            pos2(r.right() - 12.0, r.center().y),
+            Align2::RIGHT_CENTER,
+            "your microphone, before Vidar",
+            FontId::proportional(11.5),
+            p.muted,
+        );
+        if resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        if resp
+            .on_hover_ui(|ui| {
+                tip_ui(
+                    ui,
+                    (
+                        "Original",
+                        "Your recording as the microphone delivered it, without noise removal or voice tone.",
+                    ),
+                )
+            })
+            .clicked()
+            && !(selected && playing)
+        {
+            self.choose(Track::Original, playing);
+        }
+        ui.add_space(10.0);
+
+        // Column headers.
+        let w = ui.available_width();
+        let tile_w = (w - LABEL_W - GAP * 2.0) / 3.0;
+        let (hdr, _) = ui.allocate_exact_size(vec2(w, 16.0), Sense::hover());
+        for (k, (name, _)) in STRENGTH.iter().enumerate() {
+            let x = hdr.left() + LABEL_W + k as f32 * (tile_w + GAP) + tile_w / 2.0;
+            ui.painter().text(
+                pos2(x, hdr.center().y),
+                Align2::CENTER_CENTER,
+                *name,
+                semi(11.5),
+                p.muted,
+            );
+        }
+        ui.add_space(4.0);
+
+        // One row per mode.
+        let mut modes: Vec<&'static str> = Vec::new();
+        for var in &t.variants {
+            if !modes.contains(&var.option.mode) {
+                modes.push(var.option.mode);
+            }
+        }
+        for mode in modes {
+            let (row, _) = ui.allocate_exact_size(vec2(w, TILE_H), Sense::hover());
+            let first = t
+                .variants
+                .iter()
+                .find(|x| x.option.mode == mode && x.unavailable.is_none());
+            ui.painter().text(
+                pos2(row.left() + 2.0, row.center().y - 8.0),
+                Align2::LEFT_CENTER,
+                mode,
+                semi(13.5),
+                p.text,
+            );
+            let sub = first.map_or("not available".to_string(), |x| {
+                format!(
+                    "{:.0} ms · {}",
+                    x.delay_ms,
+                    cpu_text(x.cpu_percent).replace(" of 1 core", " CPU")
+                )
+            });
+            ui.painter().text(
+                pos2(row.left() + 2.0, row.center().y + 9.0),
+                Align2::LEFT_CENTER,
+                sub,
+                FontId::proportional(10.5),
+                p.muted,
+            );
+            if let Some(x) = first {
+                let (cpu, delay) = (x.cpu_percent, x.delay_ms);
+                ui.interact(
+                    Rect::from_min_size(row.min, vec2(LABEL_W - 6.0, TILE_H)),
+                    ui.scope_id().with(("mode", mode)),
+                    Sense::hover(),
+                )
+                .on_hover_ui(|ui| {
+                    tip_ui(ui, METRIC_TIPS[2]);
+                    ui.label(RichText::new(format!("{mode}: about {delay:.0} ms.")).size(12.5));
+                    ui.add_space(4.0);
+                    tip_ui(ui, METRIC_TIPS[3]);
+                    let n = cpu_count();
+                    ui.label(
+                        RichText::new(format!(
+                            "{mode}: {}. This PC has {n} logical cores, so Task Manager would show about {:.1}%.",
+                            cpu_text(cpu),
+                            cpu / n as f64
+                        ))
+                        .size(12.5),
+                    );
                 });
+            }
+            for (k, (strength, _)) in STRENGTH.iter().enumerate() {
+                let Some(i) = t
+                    .variants
+                    .iter()
+                    .position(|x| x.option.mode == mode && x.option.strength == *strength)
+                else {
+                    continue;
+                };
+                let r = Rect::from_min_size(
+                    pos2(row.left() + LABEL_W + k as f32 * (tile_w + GAP), row.top()),
+                    vec2(tile_w, TILE_H),
+                );
+                self.compare_tile(ui, p, v, r, i, playing, best == Some(i));
+            }
+            ui.add_space(GAP);
+        }
 
-                if let (Some(_), Track::Variant(i)) = (var.filter(|x| x.unavailable.is_none()), track) {
+        // What is selected, and a way to use it.
+        ui.add_space(4.0);
+        ui.horizontal(|ui| match self.selected {
+            Track::Variant(i)
+                if t.variants.get(i).is_some_and(|x| x.unavailable.is_none()) =>
+            {
+                let var = &t.variants[i];
+                ui.label(
+                    RichText::new(option_name(&var.option))
+                        .font(semi(13.0))
+                        .color(p.text),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if is_current(&var.option, v) {
+                        badge(ui, p.accent.gamma_multiply(0.18), p.accent, "In use");
+                    } else if primary_tip(
+                        ui,
+                        p,
+                        "Use this",
+                        110.0,
+                        (
+                            "Use this",
+                            "Switches Vidar to this mode and strength. Voice tone stays as set below.",
+                        ),
+                    ) {
+                        self.handle.send(Cmd::ApplyOption(i));
+                    }
+                });
+            }
+            _ => {
+                ui.label(
+                    RichText::new("Pick a tile to hear your recording cleaned")
+                        .small()
+                        .color(p.muted),
+                );
+            }
+        });
+    }
+
+    /// One tile in the comparison grid: noise removed, the voice verdict and badges.
+    #[allow(clippy::too_many_arguments)]
+    fn compare_tile(
+        &mut self,
+        ui: &mut egui::Ui,
+        p: &Pal,
+        v: &View,
+        r: Rect,
+        i: usize,
+        playing: bool,
+        best: bool,
+    ) {
+        let t = &v.test;
+        let var = &t.variants[i];
+        let track = Track::Variant(i);
+        let available = var.unavailable.is_none();
+        let selected = self.selected == track;
+        let current = is_current(&var.option, v);
+        let resp = ui.interact(
+            r,
+            ui.scope_id().with(("tile", i)),
+            if available {
+                Sense::click()
+            } else {
+                Sense::hover()
+            },
+        );
+        let hovered = resp.hovered() && available;
+        let painter = ui.painter().clone();
+        let fill = if selected {
+            p.accent.gamma_multiply(0.14)
+        } else if hovered {
+            p.surface2
+        } else {
+            p.surface2.gamma_multiply(0.55)
+        };
+        painter.rect_filled(r, 10.0, fill);
+        let stroke = if selected {
+            Stroke::new(1.5, p.accent)
+        } else if current {
+            Stroke::new(1.0, p.accent.gamma_multiply(0.5))
+        } else {
+            Stroke::new(1.0, p.border.gamma_multiply(0.7))
+        };
+        painter.rect_stroke(r, 10.0, stroke, StrokeKind::Inside);
+
+        if !available {
+            painter.text(
+                r.center(),
+                Align2::CENTER_CENTER,
+                "not available",
+                FontId::proportional(11.0),
+                p.muted,
+            );
+            let why = var.unavailable.clone().unwrap_or_default();
+            resp.on_hover_ui(|ui| tip_ui_owned(ui, "Not available", &why));
+            return;
+        }
+
+        let headline = if var.noise_removed_db >= 60.0 {
+            "-60+ dB".to_string()
+        } else {
+            format!("-{:.0} dB", var.noise_removed_db)
+        };
+        painter.text(
+            pos2(r.center().x, r.top() + 19.0),
+            Align2::CENTER_CENTER,
+            headline,
+            semi(15.0),
+            p.text,
+        );
+        let (verdict, vcolor) = if !t.speech_detected {
+            ("less noise".to_string(), p.muted)
+        } else if var.voice_change_db < -3.0 {
+            (format!("voice {:+.0} dB", var.voice_change_db), p.warn)
+        } else {
+            ("voice intact".to_string(), p.muted)
+        };
+        painter.text(
+            pos2(r.center().x, r.top() + 37.0),
+            Align2::CENTER_CENTER,
+            verdict,
+            FontId::proportional(10.5),
+            vcolor,
+        );
+
+        // Corners: playing / selected on the left, best and in use on the right.
+        play_indicator(
+            &painter,
+            ui,
+            p.accent,
+            r.left_top() + vec2(13.0, 13.0),
+            selected,
+            selected && playing,
+            Color32::TRANSPARENT,
+        );
+        if best {
+            let c = r.right_top() + vec2(-12.0, 12.0);
+            painter.circle_filled(c, 7.5, p.accent);
+            painter.text(
+                c,
+                Align2::CENTER_CENTER,
+                "★",
+                FontId::proportional(10.0),
+                p.on_accent,
+            );
+        }
+        if current {
+            painter.circle_filled(r.right_bottom() + vec2(-10.0, -10.0), 3.5, p.accent);
+        }
+
+        if hovered {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        let speech = t.speech_detected;
+        let resp = resp.on_hover_ui(|ui| {
+            ui.set_max_width(280.0);
+            ui.label(RichText::new(option_name(&var.option)).font(semi(13.0)));
+            if best {
+                ui.label(
+                    RichText::new("★ Best for you: removes the most noise without making your voice noticeably quieter.")
+                        .size(12.0)
+                        .color(p.accent),
+                );
+            }
+            if current {
+                ui.label(
+                    RichText::new("● The mode and strength you use now.")
+                        .size(12.0)
+                        .color(p.accent),
+                );
+            }
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(format!("Noise removed: {:.0} dB", var.noise_removed_db)).size(12.5),
+            );
+            ui.label(RichText::new(METRIC_TIPS[0].1).size(11.5).color(p.muted));
+            if speech {
+                ui.add_space(2.0);
+                ui.label(
+                    RichText::new(format!("Voice: {:+.1} dB", var.voice_change_db)).size(12.5),
+                );
+                ui.label(RichText::new(METRIC_TIPS[1].1).size(11.5).color(p.muted));
+            }
+        });
+        if resp.clicked() && !(selected && playing) {
+            self.choose(track, playing);
+        }
+    }
+
+    /// The voice tone card. It sits on the Test tab so a tone can be tried on your recording:
+    /// changes are heard right away, and they also apply to noise cancellation.
+    fn tone_card(&mut self, ui: &mut egui::Ui, p: &Pal, v: &View) {
+        card(ui, p, |ui| {
+            section_help(ui, p, "Voice tone", TONE_HELP);
+            let sel = TONE_PRESETS.iter().position(|(k, _)| *k == v.eq_preset);
+            let labels: Vec<&str> = TONE_PRESETS.iter().map(|(_, l)| *l).collect();
+            if let Some(i) = segmented(ui, p, &labels, sel, true, &TONE_TIPS) {
+                self.handle
+                    .send(Cmd::SetEqPreset(TONE_PRESETS[i].0.to_string()));
+            }
+            ui.add_space(6.0);
+            let gains = vidar_dsp::eq_preset(&v.eq_preset).unwrap_or(v.eq_custom_db);
+            if let Some((g, done)) = tone_curve(ui, p, gains, v.eq_preset != "off") {
+                self.handle.send(Cmd::SetEqCustom {
+                    gains_db: g,
+                    save: done,
+                });
+            }
+            ui.horizontal(|ui| {
+                let hint = if v.test.variants.is_empty() {
+                    "Record yourself above to hear each change as you make it"
+                } else {
+                    "Changes are heard right away on the cleaned versions"
+                };
+                ui.label(RichText::new(hint).small().color(p.muted));
+                if v.eq_preset == "custom" && v.eq_custom_db.iter().any(|&g| g != 0.0) {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if current {
-                            ui.label(RichText::new("In use").small().color(p.accent));
-                        } else if secondary(ui, p, "Use").on_hover_ui(|ui| tip_ui(ui, ("Use", "Switches Vidar to this mode and strength."))).clicked() {
-                            self.handle.send(Cmd::ApplyOption(i));
+                        if ui.link(RichText::new("Flatten curve").small()).clicked() {
+                            self.handle.send(Cmd::SetEqCustom {
+                                gains_db: [0.0; vidar_dsp::EQ_BANDS],
+                                save: true,
+                            });
                         }
                     });
                 }
             });
         });
-        ui.data_mut(|d| d.insert_temp(id, shown.response.rect));
-        if let Some(row) = row {
-            if hovered {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-            }
-            let tip: Tip = if selected && playing {
-                ("Playing", "This is the version you are hearing.")
-            } else if playing {
-                (
-                    "Switch",
-                    "Switches to this version at the same moment in the recording.",
-                )
-            } else {
-                ("Play", "Plays this version.")
-            };
-            if row.on_hover_ui(|ui| tip_ui(ui, tip)).clicked()
-                && available
-                && !(selected && playing)
-            {
-                self.choose(track, playing);
-            }
-        }
     }
 
     // ------------------------------------------------------------ Settings
@@ -1962,15 +2572,24 @@ impl VidarWindow {
 
         ui.label(RichText::new("How loud apps hear you").color(p.text))
             .on_hover_ui(|ui| tip_ui(ui, TIP_LEVEL));
-        let (rect, resp) =
-            ui.allocate_exact_size(vec2(ui.available_width(), 10.0), Sense::hover());
+        let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 10.0), Sense::hover());
         resp.on_hover_ui(|ui| tip_ui(ui, TIP_LEVEL));
         let x_of = |db: f32| rect.left() + rect.width() * ((db - LOW) / -LOW).clamp(0.0, 1.0);
         let painter = ui.painter();
         painter.rect_filled(rect, 5.0, p.surface2);
         let (left_end, right_end) = (
-            CornerRadius { nw: 5, sw: 5, ne: 0, se: 0 },
-            CornerRadius { nw: 0, sw: 0, ne: 5, se: 5 },
+            CornerRadius {
+                nw: 5,
+                sw: 5,
+                ne: 0,
+                se: 0,
+            },
+            CornerRadius {
+                nw: 0,
+                sw: 0,
+                ne: 5,
+                se: 5,
+            },
         );
         for (a, b, c, corners) in [
             (LOW, QUIET, p.track_idle, left_end),
@@ -2002,7 +2621,10 @@ impl VidarWindow {
 
         let heard = self.voice_db.filter(|_| self.voice_secs >= 2.0);
         let (text, color) = match (live, heard) {
-            (None, _) => ("Turn noise cancellation on and talk to see your level.", p.muted),
+            (None, _) => (
+                "Turn noise cancellation on and talk to see your level.",
+                p.muted,
+            ),
             (Some(_), None) => ("Talk normally for a few seconds...", p.muted),
             (Some(_), Some(d)) if d < QUIET => (
                 if !v.auto_level {
@@ -2173,6 +2795,34 @@ impl VidarWindow {
         ui.add_space(8.0);
 
         card(ui, p, |ui| {
+            section_help(ui, p, "Voice tone", TONE_HELP);
+            ui.horizontal(|ui| {
+                let name = TONE_PRESETS
+                    .iter()
+                    .find(|(k, _)| *k == v.eq_preset)
+                    .map_or("Off", |(_, l)| *l);
+                ui.label(RichText::new(name).font(semi(13.5)).color(p.text));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if secondary(ui, p, "Tune on Test")
+                        .on_hover_ui(|ui| {
+                            tip_ui(
+                                ui,
+                                (
+                                    "Tune on Test",
+                                    "Voice tone lives on the Test tab, next to your recording, so you hear each change while you make it.",
+                                ),
+                            )
+                        })
+                        .clicked()
+                    {
+                        self.tab = Tab::Test;
+                    }
+                });
+            });
+        });
+        ui.add_space(8.0);
+
+        card(ui, p, |ui| {
             section(ui, p, "Apps and Windows");
             if switch_row(
                 ui,
@@ -2214,7 +2864,7 @@ impl VidarWindow {
                 ui.label(RichText::new(text).color(p.text));
             });
             ui.label(
-                RichText::new("Runs on the free VB-Audio Virtual Cable driver")
+                RichText::new("Runs on VB-CABLE by VB-Audio, donationware (see About)")
                     .small()
                     .color(p.muted),
             );
@@ -2276,17 +2926,90 @@ impl VidarWindow {
         });
         ui.add_space(8.0);
         ui.vertical_centered(|ui| {
+            if ui
+                .link(
+                    RichText::new(concat!("Vidar ", env!("CARGO_PKG_VERSION"), " · About")).small(),
+                )
+                .clicked()
+            {
+                self.tab = Tab::About;
+            }
+        });
+    }
+
+    fn about(&mut self, ui: &mut egui::Ui, p: &Pal) {
+        // Header: the logo in its "on" colours, the name and the version.
+        ui.add_space(6.0);
+        ui.vertical_centered(|ui| {
+            let (r, _) = ui.allocate_exact_size(vec2(96.0, 64.0), Sense::hover());
+            draw_logo_static(ui.painter(), r.center(), 40.0);
+            ui.add_space(2.0);
+            ui.label(RichText::new("Vidar").font(semi(22.0)).color(p.text));
+            ui.add_space(2.0);
+            badge(
+                ui,
+                p.accent.gamma_multiply(0.18),
+                p.accent,
+                concat!("Version ", env!("CARGO_PKG_VERSION")),
+            );
+            ui.add_space(6.0);
+            ui.label(RichText::new("AI noise cancellation for your microphone").color(p.muted));
+        });
+        ui.add_space(14.0);
+
+        // VB-Audio's distribution terms ask that users can identify VB-CABLE, see where it comes
+        // from and that it is donationware: https://vb-audio.com/Services/licensing.htm
+        card(ui, p, |ui| {
+            section(ui, p, "Virtual microphone");
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("VB-CABLE").font(semi(15.0)).color(p.text));
+                badge(ui, p.blue.gamma_multiply(0.18), p.blue, "Donationware");
+            });
+            ui.label(RichText::new("by VB-Audio Software").small().color(p.muted));
+            ui.add_space(6.0);
             ui.label(
-                RichText::new(concat!("Vidar ", env!("CARGO_PKG_VERSION")))
+                RichText::new(
+                    "Vidar AI Microphone and Vidar Internal are VB-CABLE devices under Vidar's names. All participations are welcome.",
+                )
+                .color(p.text),
+            );
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                if primary(ui, p, "Support VB-Audio", 150.0) {
+                    open_url(VB_CABLE_URL);
+                }
+                if secondary(ui, p, "www.vb-cable.com").clicked() {
+                    open_url(VB_CABLE_SITE);
+                }
+            });
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new("Companies and organisations need a VB-CABLE licence from VB-Audio.")
                     .small()
                     .color(p.muted),
             );
+        });
+        ui.add_space(8.0);
+
+        card(ui, p, |ui| {
+            section(ui, p, "Noise models");
+            ui.add_space(4.0);
+            for (i, &(name, by, licence, url)) in CREDITS.iter().enumerate() {
+                if i > 0 {
+                    let y = ui.cursor().top();
+                    let x = ui.max_rect().x_range();
+                    ui.painter().hline(x, y, Stroke::new(1.0, p.border));
+                }
+                credit_row(ui, p, name, by, licence, url);
+            }
+        });
+        ui.add_space(10.0);
+        ui.vertical_centered(|ui| {
             ui.label(
-                RichText::new(
-                    "Free and open source. Uses RNNoise, DPDFNet and VB-Audio Virtual Cable.",
-                )
-                .small()
-                .color(p.muted),
+                RichText::new("Vidar is MIT licensed. Other components and their licences: THIRD_PARTY_NOTICES.md")
+                    .small()
+                    .color(p.muted),
             );
         });
     }
@@ -2383,6 +3106,92 @@ impl VidarWindow {
     }
 }
 
+/// VB-CABLE's product page, with the donation and licence links.
+const VB_CABLE_URL: &str = "https://vb-audio.com/Cable/";
+/// The origin VB-Audio's distribution terms ask us to name.
+const VB_CABLE_SITE: &str = "https://www.vb-cable.com";
+
+/// (component, author, licence, homepage) shown under "Noise models" on the About tab.
+const CREDITS: &[(&str, &str, &str, &str)] = &[
+    (
+        "RNNoise",
+        "Xiph.Org, Mozilla, Amazon",
+        "BSD-3",
+        "https://github.com/xiph/rnnoise",
+    ),
+    (
+        "DPDFNet",
+        "Ceva",
+        "Apache-2.0",
+        "https://huggingface.co/Ceva-IP/DPDFNet",
+    ),
+];
+
+/// One "Built with" entry: name and author on the left, licence on the right. The whole row
+/// is a link to the project's homepage.
+fn credit_row(ui: &mut egui::Ui, p: &Pal, name: &str, by: &str, licence: &str, url: &str) {
+    let bg = ui.painter().add(egui::Shape::Noop);
+    let inner = egui::Frame::new()
+        .inner_margin(egui::Margin::symmetric(6, 7))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 1.0;
+                    ui.label(RichText::new(name).font(semi(13.5)).color(p.text));
+                    ui.label(RichText::new(by).small().color(p.muted));
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    badge(ui, p.surface2, p.muted, licence);
+                });
+            });
+        });
+    let resp = ui.interact(
+        inner.response.rect,
+        ui.scope_id().with(("credit", name)),
+        Sense::click(),
+    );
+    let hover = ui
+        .ctx()
+        .animate_bool_with_time(resp.id, resp.hovered(), 0.1);
+    if hover > 0.0 {
+        ui.painter().set(
+            bg,
+            egui::Shape::rect_filled(inner.response.rect, 8.0, p.surface2.gamma_multiply(hover)),
+        );
+    }
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    if resp.on_hover_text(url).clicked() {
+        open_url(url);
+    }
+}
+
+/// The Vidar logo at rest in its full colours (the About header).
+fn draw_logo_static(painter: &egui::Painter, centre: egui::Pos2, half: f32) {
+    let w = vidar_brand::BAR_HALF_WIDTH * half;
+    for &(bx, half_h, bright) in vidar_brand::BARS.iter() {
+        let [r, g, b] = vidar_brand::neon(bx);
+        let neon = Color32::from_rgb(r as u8, g as u8, b as u8);
+        let h = half_h.clamp(0.02, 0.85) * half;
+        let x = centre.x + bx * half;
+        let bar = Rect::from_min_max(pos2(x - w, centre.y - h - w), pos2(x + w, centre.y + h + w));
+        for (grow, alpha) in [(3.0, 0.10), (1.6, 0.16)] {
+            painter.rect_filled(
+                bar.expand(w * grow),
+                w * (1.0 + grow),
+                neon.gamma_multiply(alpha * bright),
+            );
+        }
+        painter.rect_filled(bar, w, neon.gamma_multiply(0.35 + 0.65 * bright));
+    }
+}
+
+/// Opens `url` in the default browser.
+fn open_url(url: &str) {
+    let _ = std::process::Command::new("explorer").arg(url).spawn();
+}
+
 impl eframe::App for VidarWindow {
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         let dark = ctx.theme() == egui::Theme::Dark;
@@ -2441,6 +3250,7 @@ impl eframe::App for VidarWindow {
                             Tab::Home => self.home(ui, &p, &v),
                             Tab::Test => self.test_list(ui, &p, &v),
                             Tab::Settings => self.settings(ui, &p, &v),
+                            Tab::About => self.about(ui, &p),
                         }
                         ui.add_space(8.0);
                     });

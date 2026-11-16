@@ -60,6 +60,11 @@ pub struct Config {
     pub mic_boost_db: f64,
     pub auto_level: bool,
 
+    /// Voice tone: `"off"`, a preset from [`vidar_dsp::EQ_PRESETS`], or `"custom"`.
+    pub eq_preset: String,
+    /// Band gains in dB (low to high) used when `eq_preset` is `"custom"`.
+    pub eq_custom_db: [f64; vidar_dsp::EQ_BANDS],
+
     /// `"dpdfnet"` (Voice HD, the default) or `"rnnoise"` (Voice). Anything else reads as
     /// `"rnnoise"`, which is always available.
     pub denoise_engine: String,
@@ -93,6 +98,8 @@ impl Default for Config {
             vad_threshold: 0.70,
             mic_boost_db: 0.0,
             auto_level: false,
+            eq_preset: "off".into(),
+            eq_custom_db: [0.0; vidar_dsp::EQ_BANDS],
             denoise_engine: "dpdfnet".into(),
             is_swapped: false,
             original_mic_id: None,
@@ -120,6 +127,15 @@ impl Config {
         }
         self.vad_threshold = finite_or(self.vad_threshold, 0.70).clamp(0.05, 0.99);
         self.mic_boost_db = finite_or(self.mic_boost_db, 0.0).clamp(0.0, 30.0);
+        let preset = self.eq_preset.trim().to_ascii_lowercase();
+        self.eq_preset = if preset == "custom" || vidar_dsp::eq_preset(&preset).is_some() {
+            preset
+        } else {
+            "off".into()
+        };
+        for g in &mut self.eq_custom_db {
+            *g = finite_or(*g, 0.0).clamp(-vidar_dsp::EQ_MAX_DB, vidar_dsp::EQ_MAX_DB);
+        }
         for key in RETIRED_KEYS {
             self.extra.remove(key);
         }
@@ -128,6 +144,13 @@ impl Config {
                 *id = None;
             }
         }
+    }
+}
+
+impl Config {
+    /// The band gains the equaliser should use now.
+    pub fn eq_gains_db(&self) -> [f64; vidar_dsp::EQ_BANDS] {
+        vidar_dsp::eq_preset(&self.eq_preset).unwrap_or(self.eq_custom_db)
     }
 }
 
@@ -150,6 +173,26 @@ mod tests {
         assert_eq!(c.mic_boost_db, 0.0);
         assert!(!c.auto_level && !c.raw_capture);
         assert_eq!(c.denoise_engine, "dpdfnet");
+        assert_eq!(c.eq_preset, "off");
+        assert_eq!(c.eq_gains_db(), [0.0; vidar_dsp::EQ_BANDS]);
+    }
+
+    #[test]
+    fn eq_settings_are_sanitized_and_resolved() {
+        let mut c = Config {
+            eq_preset: " Warm ".into(),
+            eq_custom_db: [99.0, f64::NAN, -3.0, 0.0, 1.0],
+            ..Config::default()
+        };
+        c.sanitize();
+        assert_eq!(c.eq_preset, "warm");
+        assert_eq!(c.eq_gains_db(), vidar_dsp::eq_preset("warm").unwrap());
+        assert_eq!(c.eq_custom_db, [12.0, 0.0, -3.0, 0.0, 1.0]);
+        c.eq_preset = "custom".into();
+        assert_eq!(c.eq_gains_db(), c.eq_custom_db);
+        c.eq_preset = "loudness-war".into();
+        c.sanitize();
+        assert_eq!(c.eq_preset, "off");
     }
 
     #[test]

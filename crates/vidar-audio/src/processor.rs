@@ -7,7 +7,7 @@ use std::sync::Arc;
 use vidar_config::EngineSettings;
 use vidar_dsp::{
     levels, process_mono_frame, AdaptiveGate, Denoiser, Frame, HighPass, SpeechLeveler,
-    TransientSuppressor, VoiceBands, BANDS, FRAME_SIZE,
+    TransientSuppressor, VoiceBands, VoiceEq, BANDS, FRAME_SIZE,
 };
 
 use crate::shared::{Controls, Meters};
@@ -22,6 +22,7 @@ pub struct Processor {
     gate: AdaptiveGate,
     leveler: SpeechLeveler,
     transient: TransientSuppressor,
+    eq: VoiceEq,
     bands: VoiceBands,
     model: Option<Box<dyn Denoiser>>,
     model_rx: Receiver<ModelSwap>,
@@ -49,6 +50,11 @@ impl Processor {
             gate,
             leveler: SpeechLeveler::default(),
             transient: TransientSuppressor::default(),
+            eq: {
+                let mut eq = VoiceEq::new(48_000.0);
+                eq.set_gains(settings.eq_db);
+                eq
+            },
             bands: VoiceBands::default(),
             model,
             model_rx,
@@ -123,6 +129,7 @@ impl Processor {
             if !self.was_muted {
                 self.gate.reset();
                 self.hpf.reset();
+                self.eq.reset();
                 self.bands.reset();
                 self.was_muted = true;
             }
@@ -149,6 +156,12 @@ impl Processor {
         } else {
             None
         };
+        self.eq.set_gains(c.eq());
+        let eq = if self.eq.is_flat() {
+            None
+        } else {
+            Some(&mut self.eq)
+        };
         let leveler = if c.auto_level.load(Relaxed) {
             Some(&mut self.leveler)
         } else {
@@ -164,6 +177,7 @@ impl Processor {
             leveler,
             Some(&mut self.transient),
             c.mic_boost_db.get(),
+            eq,
         );
         for x in self.frame.iter_mut() {
             *x = x.clamp(-1.0, 1.0);
@@ -291,6 +305,15 @@ mod tests {
         assert!(!dropped.load(Relaxed), "not dropped on the audio thread");
         drop(old);
         assert!(dropped.load(Relaxed));
+    }
+
+    #[test]
+    fn eq_changes_reach_the_chain() {
+        let (mut p, controls, _, _, _) = setup(None);
+        assert!(p.eq.is_flat());
+        controls.set_eq([0.0, 0.0, 6.0, 0.0, 0.0]);
+        p.push_interleaved(&vec![0.0f32; FRAME_SIZE], 1, &mut |_| {});
+        assert_eq!(p.eq.gains_db(), [0.0, 0.0, 6.0, 0.0, 0.0]);
     }
 
     #[test]

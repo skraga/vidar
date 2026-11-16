@@ -1,8 +1,8 @@
 """Paired bootstrap confidence intervals for bench/benchmark.py."""
+
 from collections import defaultdict
 
 import numpy as np
-
 from metrics import LABELS, LOWER_BETTER, RATIOS
 
 B = 10000
@@ -55,10 +55,21 @@ def compare(rows, systems, metrics, baseline, seed=0, group=None):
             d = boot - bboot
             lo, hi = np.nanpercentile(boot, [2.5, 97.5])
             dlo, dhi = np.nanpercentile(d, [2.5, 97.5])
-            out.append(dict(group=group or "all", metric=m, system=s, n=len(names), mean=float(_stat(v)),
-                            lo=float(lo), hi=float(hi), delta=float(_stat(v) - _stat(base)),
-                            dlo=float(dlo), dhi=float(dhi),
-                            significant=bool(s != baseline and (dlo > 0 or dhi < 0))))
+            out.append(
+                dict(
+                    group=group or "all",
+                    metric=m,
+                    system=s,
+                    n=len(names),
+                    mean=float(_stat(v)),
+                    lo=float(lo),
+                    hi=float(hi),
+                    delta=float(_stat(v) - _stat(base)),
+                    dlo=float(dlo),
+                    dhi=float(dhi),
+                    significant=bool(s != baseline and (dlo > 0 or dhi < 0)),
+                )
+            )
     return out
 
 
@@ -72,8 +83,10 @@ def _ok(r, m):
 def print_compare(res, baseline):
     if not res:
         return
-    print(f"\n== overall: mean [95% CI]; delta from {baseline} [95% CI], * = significant "
-          f"(paired bootstrap, {B} resamples)")
+    print(
+        f"\n== overall: mean [95% CI]; delta from {baseline} [95% CI], * = significant "
+        f"(paired bootstrap, {B} resamples)"
+    )
     by = defaultdict(list)
     for r in res:
         by[r["metric"]].append(r)
@@ -83,8 +96,10 @@ def print_compare(res, baseline):
         for r in rs:
             line = f"  {r['system']:<20} {_f(m, r['mean'])} [{_f(m, r['lo'])}, {_f(m, r['hi'])}]"
             if r["system"] != baseline:
-                line += (f"   {_f(m, r['delta'], True)} [{_f(m, r['dlo'], True)}, {_f(m, r['dhi'], True)}]"
-                         f"{' *' if r['significant'] else ''}")
+                line += (
+                    f"   {_f(m, r['delta'], True)} [{_f(m, r['dlo'], True)}, {_f(m, r['dhi'], True)}]"
+                    f"{' *' if r['significant'] else ''}"
+                )
             print(line)
 
 

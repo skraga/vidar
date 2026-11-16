@@ -189,7 +189,7 @@ mod tests {
     #[test]
     fn off_state_is_grey() {
         let px = render(64, false);
-        for p in px.chunks_exact(4).filter(|p| p[3] > 200) {
+        for p in px.as_chunks::<4>().0.iter().filter(|p| p[3] > 200) {
             let (r, g, b) = (p[0] as i32, p[1] as i32, p[2] as i32);
             assert!((r - g).abs() < 30 && (g - b).abs() < 45, "not grey: {p:?}");
         }

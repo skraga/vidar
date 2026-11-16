@@ -17,6 +17,8 @@ pub struct EngineSettings {
     pub high_pass: bool,
     pub hpf_cutoff_hz: f64,
     pub auto_level: bool,
+    /// Equaliser band gains in dB (all zero = off).
+    pub eq_db: [f64; vidar_dsp::EQ_BANDS],
 }
 
 /// Output gain after the model (before boost).
@@ -60,6 +62,7 @@ impl EngineSettings {
             high_pass: true,
             hpf_cutoff_hz: HPF_CUTOFF_HZ,
             auto_level: cfg.auto_level,
+            eq_db: cfg.eq_gains_db(),
         }
     }
 }

@@ -1,0 +1,7 @@
+# Pinned compiler for reproducible builds (local, CI and releases).
+# Bump deliberately; must stay >= workspace `rust-version` in Cargo.toml (set by egui/eframe).
+[toolchain]
+channel = "1.100"
+components = ["rustfmt", "clippy"]
+targets = ["x86_64-pc-windows-msvc"]
+profile = "minimal"

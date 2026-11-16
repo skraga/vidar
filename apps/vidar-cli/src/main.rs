@@ -61,11 +61,14 @@ struct Cli {
     output_path: Option<PathBuf>,
 
     /// Skip the neural noise model (filter and gate only)
-    #[arg(long = "no-rnnoise", alias = "no-model")]
+    #[arg(long = "no-model", alias = "no-rnnoise")]
     no_model: bool,
-    /// Neural noise model (falls back to rnnoise if DPDFNet cannot load)
+    /// Neural noise model (falls back to rnnoise if DPDFNet cannot load, unless --no-fallback)
     #[arg(long, value_enum, default_value = "dpdfnet")]
     engine: EngineArg,
+    /// Fail instead of falling back to rnnoise when DPDFNet cannot load (for benchmarks)
+    #[arg(long = "no-fallback")]
+    no_fallback: bool,
     /// DPDFNet speech detector
     #[arg(long = "dpdfnet-vad", value_enum, default_value = "rnnoise")]
     dpdfnet_vad: VadArg,
@@ -76,7 +79,7 @@ struct Cli {
         default_value = "dpdfnet2_48khz_hr"
     )]
     dpdfnet_model: ModelArg,
-    /// Folder with DPDFNet .onnx models (default: next to the program)
+    /// Folder with DPDFNet .onnx models (default: models\ next to the program)
     #[arg(long = "models-dir", value_name = "DIR")]
     models_dir: Option<PathBuf>,
     /// Skip the adaptive noise gate
@@ -168,6 +171,7 @@ fn main() -> ExitCode {
 
     let opts = CleanOptions {
         no_model: cli.no_model,
+        no_fallback: cli.no_fallback,
         no_gate: cli.no_gate,
         no_declick: cli.no_declick,
         gate_level_after_model: matches!(cli.gate_level, GateLevelArg::Output),
@@ -196,6 +200,7 @@ fn main() -> ExitCode {
         .unwrap()
         .progress_chars("#>-");
 
+    let mut any_failed = false;
     let results: Vec<CleanResult> = if target.is_dir() {
         let files = audio_files(&target);
         if files.is_empty() {
@@ -264,6 +269,7 @@ fn main() -> ExitCode {
         });
         for f in failures.into_inner().unwrap() {
             eprintln!("[ERROR] {f}");
+            any_failed = true;
         }
         done
     } else if target.is_file() {
@@ -311,6 +317,9 @@ fn main() -> ExitCode {
 
     if show_stats {
         print_stats(&results);
+    }
+    if any_failed {
+        return ExitCode::from(1);
     }
     ExitCode::SUCCESS
 }

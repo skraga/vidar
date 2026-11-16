@@ -17,6 +17,33 @@ Microphone**, which Discord, Teams, Zoom, OBS and games use like any other.
 Your mic → Vidar (filter → AI model → cleanup) → Vidar AI Microphone → your apps
 ```
 
+## Install
+
+Vidar needs Windows 10 (version 1903 or later) or Windows 11 on a 64-bit x86 PC. Download
+`vidar-<version>-windows-x64.zip` from the [Releases](../../releases) page, extract it anywhere
+and run `vidar.exe`.
+
+To build it from source instead, see [docs/development.md](docs/development.md#building). To get
+the same folder you can copy to another PC or zip up, run:
+
+```
+cargo xtask dist
+```
+
+This fetches the models and ONNX Runtime, builds the release binaries and puts everything Vidar
+needs in `dist\vidar`, licence files included. It needs
+[cargo-about](https://github.com/EmbarkStudios/cargo-about) for the Rust crate licences
+(`cargo install cargo-about --locked`).
+
+```
+vidar.exe, vidar-cli.exe, onnxruntime.dll
+models\dpdfnet2_48khz_hr.onnx   Voice HD (dist --all adds dpdfnet8)
+drivers\vbcable\                the virtual microphone (VB-CABLE by VB-Audio)
+LICENSE, THIRD_PARTY_NOTICES.md, licenses\
+```
+
+Keep the licence files with the program when you share it. Without `onnxruntime.dll` or the model, Voice HD falls back to Voice.
+
 ## Getting started
 
 1. **Install the virtual microphone.** On first start Vidar offers to install it. Windows asks
@@ -103,12 +130,36 @@ recordings). For results on a second test set, the method and how to reproduce t
 
 ## Cleaning files
 
-The same processing is available for recordings:
+The same processing is available for recordings, with `vidar-cli.exe`, which is built and
+shipped next to `vidar.exe`:
 
 ```
 vidar-cli --clean interview.m4a                       # writes interview_cleaned.wav
 vidar-cli --clean podcast/ podcast-clean/ --engine rnnoise   # Voice instead of Voice HD
 ```
+
+## Uninstall
+
+Vidar has no installer, so removing it takes a few steps. Do them in this order: the first one
+needs Vidar itself.
+
+1. **Remove the virtual microphone.** In Vidar, open **Settings → Apps and Windows → Virtual
+   microphone → Uninstall** and confirm. Vidar turns off, makes your own microphone the Windows
+   default again, restores the cable's original names and icons, and runs VB-Audio's setup to
+   **delete the VB-CABLE driver** together with both devices (Vidar AI Microphone and Vidar
+   Internal). Windows asks for permission and may want a restart. Apps that were set to Vidar
+   AI Microphone switch to another microphone.
+2. **Turn off "Start with Windows"** in the same section if it is on. Otherwise Windows keeps
+   trying to start the deleted program at sign-in.
+3. **Quit Vidar** from its tray icon (right-click → Exit) and delete the Vidar folder.
+4. **Optional: delete the leftover settings.** `%APPDATA%\Vidar` holds your settings
+   (`config.json`, or a `config.json` in the Vidar folder in portable mode), and
+   `%ProgramData%\Vidar` holds the backup of the cable's original device names.
+
+**Already deleted the Vidar folder?** The driver stays installed until you remove it. Download
+the VB-CABLE package from [www.vb-cable.com](https://www.vb-cable.com), right-click
+`VBCABLE_Setup_x64.exe`, choose **Run as administrator**, click **Remove Driver** and restart
+Windows. If another program also uses VB-CABLE, removing the driver affects that program too.
 
 ## Documentation
 
@@ -123,8 +174,13 @@ vidar-cli --clean podcast/ podcast-clean/ --engine rnnoise   # Voice instead of 
 - [RNNoise](https://github.com/xiph/rnnoise): Jean-Marc Valin, Xiph.Org, Mozilla, Amazon (BSD-3-Clause)
 - [DPDFNet](https://huggingface.co/Ceva-IP/DPDFNet): Ceva (Apache-2.0)
 - [ONNX Runtime](https://github.com/microsoft/onnxruntime): Microsoft (MIT)
-- [VB-Audio Virtual Cable](https://vb-audio.com/Cable/): Vincent Burel, donationware, bundled
-  unmodified
+- [VB-Audio Virtual Cable](https://www.vb-cable.com): VB-Audio Software (Vincent Burel), bundled
+  unmodified. VB-CABLE is donationware, all participations are welcome:
+  [support VB-Audio](https://vb-audio.com/Cable/).
 - [Inter](https://rsms.me/inter/): Rasmus Andersson (SIL Open Font License)
 
-Vidar is MIT-licensed; see [LICENSE](LICENSE).
+Vidar's own code is MIT-licensed; see [LICENSE](LICENSE). Third-party components keep their own
+licences, listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). In particular,
+`drivers/vbcable/` is VB-CABLE by VB-Audio Software: proprietary donationware, not covered by
+the MIT licence, and redistributed unmodified under
+[VB-Audio's terms](https://vb-audio.com/Services/licensing.htm).
