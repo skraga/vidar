@@ -517,6 +517,7 @@ fn tone_icon(ui: &mut egui::Ui, p: &Pal, tone: Tone) {
 const TIP_MIC: Tip = ("Microphone", "The microphone Vidar listens to. \"Windows default microphone\" follows whatever is selected in Windows Sound settings. Bluetooth headsets sound narrower while their microphone is in use.");
 const TIP_AUTO_LEVEL: Tip = ("Auto level", "Slowly makes quiet speech louder, by up to 9 dB. It never makes loud speech louder and holds still while you are silent, so background noise is not raised. Turn it on if people say you are too quiet.");
 const TIP_FINE: Tip = ("Fine-tune strength", "The same setting as Strength on the Home tab, in finer steps. Further right, Vidar must be more sure you are talking before it turns your microphone back up between words: less noise slips through, but very soft words may be cut. Further left keeps every word but lets more noise through in pauses.");
+const TIP_MIC_LEVEL: Tip = ("Microphone level", "Your microphone's own volume in Windows, the same as Input volume in Sound settings. It acts before Vidar: raise it if you sound quiet, lower it if your voice distorts. Usually better than Boost, which only makes the cleaned voice louder. Other apps, such as Discord or Teams, may change it too; Vidar shows the current value.");
 const TIP_LEVEL: Tip = ("How loud apps hear you", "Your voice after Vidar, as apps receive it. Talk normally for a few seconds. Aim for the green zone: in the grey zone people may struggle to hear you, in the red zone you may sound harsh or distorted. The white mark is where your speech usually sits.");
 const TIP_RESET: Tip = (
     "Reset to recommended",
@@ -1285,6 +1286,35 @@ fn db_text(db: f64) -> String {
     }
 }
 
+/// A full-width slider without a number. Rail and handle at 3:1 against the card, with an
+/// outlined handle; keyboard focus turns the outline into the focus colour.
+fn styled_slider(
+    ui: &mut egui::Ui,
+    p: &Pal,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+) -> egui::Response {
+    ui.scope(|ui| {
+        ui.spacing_mut().slider_width = ui.available_width();
+        let keyboard = theme::keyboard_active(ui.ctx());
+        let w = &mut ui.visuals_mut().widgets;
+        for state in [&mut w.inactive, &mut w.hovered] {
+            state.bg_fill = p.ctrl_border;
+            state.weak_bg_fill = p.ctrl_border;
+            state.bg_stroke = Stroke::new(size::FOCUS_W, p.text);
+        }
+        w.active.bg_fill = p.ctrl_border;
+        // The focus colour only for keyboard users; a mouse drag keeps the outline.
+        w.active.bg_stroke = if keyboard {
+            Stroke::new(size::FOCUS_W, p.focus)
+        } else {
+            Stroke::new(size::FOCUS_W, p.text)
+        };
+        ui.add(egui::Slider::new(value, range).show_value(false))
+    })
+    .inner
+}
+
 /// Mirrored peak envelope.
 fn draw_wave(painter: &egui::Painter, rect: Rect, peaks: &[f32], color: Color32) {
     if peaks.is_empty() {
@@ -1624,6 +1654,11 @@ pub struct VidarWindow {
     confirm_uninstall: bool,
     fine: f32,
     fine_drag: bool,
+    /// Microphone level slider (Windows volume, 0..1) while it is dragged, and how many more
+    /// seconds the "overloading" warning stays up.
+    mic_level: f32,
+    mic_drag: bool,
+    clip_secs: f32,
     /// Loudness meter in Settings: the level right now and the speech level apps hear
     /// (dBFS, smoothed over a few seconds of talking; `None` until you have talked).
     level_now_db: f32,
@@ -1701,6 +1736,9 @@ impl VidarWindow {
             confirm_uninstall: false,
             fine: v.vad_threshold as f32,
             fine_drag: false,
+            mic_level: 0.0,
+            mic_drag: false,
+            clip_secs: 0.0,
             level_now_db: -100.0,
             voice_db: None,
             voice_secs: 0.0,
@@ -3143,7 +3181,7 @@ impl VidarWindow {
                 } else if v.mic_boost_db < 14.5 {
                     "Still quiet. Raise Boost one step."
                 } else {
-                    "Still quiet. Raise your microphone volume in Windows Sound settings, or move closer."
+                    "Still quiet. Raise Microphone level below, or move closer."
                 },
                 p.warn,
             ),
@@ -3151,13 +3189,90 @@ impl VidarWindow {
                 if v.mic_boost_db > 0.5 {
                     "Too loud. Lower Boost one step."
                 } else {
-                    "Too loud. Move back a little or lower your microphone volume in Windows."
+                    "Too loud. Lower Microphone level below, or move back a little."
                 },
                 p.danger,
             ),
             (Some(_), Some(_)) => ("Good level. Nothing to change.", p.accent),
         };
         ui.label(RichText::new(text).small().color(color));
+    }
+
+    /// The microphone's own volume in Windows ("Input volume" in Sound settings), with a
+    /// warning when Windows has it muted and when the raw signal clips.
+    fn mic_level(&mut self, ui: &mut egui::Ui, p: &Pal, v: &View) {
+        let Some(vol) = v.mic_volume else {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Microphone level").color(p.text))
+                    .tip(TIP_MIC_LEVEL);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        RichText::new("Not adjustable for this microphone")
+                            .small()
+                            .color(p.muted),
+                    );
+                });
+            });
+            return;
+        };
+        if !self.mic_drag {
+            self.mic_level = vol.level;
+        }
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Microphone level").color(p.text))
+                .tip(TIP_MIC_LEVEL);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(
+                    RichText::new(format!("{:.0}%", self.mic_level * 100.0))
+                        .font(semi(ty::BODY))
+                        .color(p.text),
+                );
+            });
+        });
+        let r = styled_slider(ui, p, &mut self.mic_level, 0.0..=1.0).tip(TIP_MIC_LEVEL);
+        self.mic_drag = r.dragged();
+        if r.changed() {
+            self.handle.send(Cmd::SetMicVolume(self.mic_level));
+        }
+
+        // Clipping: the microphone's own signal, before Vidar, hit full scale. Shown for a
+        // few seconds after the last clip so a single shout does not flicker past.
+        let dt = ui.input(|i| i.stable_dt).min(0.1);
+        let peak = v
+            .live
+            .as_ref()
+            .filter(|_| v.state == RunState::Running)
+            .map_or(-100.0, |m| m.snapshot().in_peak_db);
+        self.clip_secs = if peak >= -0.5 {
+            4.0
+        } else {
+            (self.clip_secs - dt).max(0.0)
+        };
+
+        if vol.muted {
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new("Muted in Windows: Vidar hears nothing.")
+                        .small()
+                        .color(p.danger),
+                );
+                if link(ui, p, "Unmute").clicked() {
+                    self.handle.send(Cmd::SetMicMuted(false));
+                }
+            });
+        } else if self.clip_secs > 0.0 {
+            ui.label(
+                RichText::new("Your microphone is overloading. Lower Microphone level.")
+                    .small()
+                    .color(p.danger),
+            );
+        } else {
+            ui.label(
+                RichText::new("The same as Input volume in Windows Sound settings")
+                    .small()
+                    .color(p.muted),
+            );
+        }
     }
 
     /// The strength slider without numbers: what each end means, where the presets sit, and
@@ -3186,28 +3301,7 @@ impl VidarWindow {
                 ui.label(RichText::new(now).font(semi(ty::BODY)).color(p.text));
             });
         });
-        ui.spacing_mut().slider_width = ui.available_width();
-        // Rail and handle at 3:1 against the card, with an outlined handle; keyboard focus
-        // (and dragging) turns the outline into the focus colour.
-        let r = ui
-            .scope(|ui| {
-                let keyboard = theme::keyboard_active(ui.ctx());
-                let w = &mut ui.visuals_mut().widgets;
-                for state in [&mut w.inactive, &mut w.hovered] {
-                    state.bg_fill = p.ctrl_border;
-                    state.weak_bg_fill = p.ctrl_border;
-                    state.bg_stroke = Stroke::new(size::FOCUS_W, p.text);
-                }
-                w.active.bg_fill = p.ctrl_border;
-                // The focus colour only for keyboard users; a mouse drag keeps the outline.
-                w.active.bg_stroke = if keyboard {
-                    Stroke::new(size::FOCUS_W, p.focus)
-                } else {
-                    Stroke::new(size::FOCUS_W, p.text)
-                };
-                ui.add(egui::Slider::new(&mut self.fine, MIN..=MAX).show_value(false))
-            })
-            .inner;
+        let r = styled_slider(ui, p, &mut self.fine, MIN..=MAX);
 
         // Preset marks under the track, where the handle sits for each preset.
         let pad = r.rect.height() / 2.5;
@@ -3277,6 +3371,8 @@ impl VidarWindow {
             );
             ui.add_space(space::XXS);
             self.loudness_meter(ui, p, v);
+            ui.add_space(space::SM);
+            self.mic_level(ui, p, v);
             ui.add_space(space::SM);
 
             section_help(ui, p, "Boost", BOOST_HELP);

@@ -198,6 +198,10 @@ pub struct View {
     pub cable_names: Option<(String, String)>,
     pub inputs: Vec<InputChoice>,
     pub selected_input: Option<String>,
+    /// Windows volume of the physical microphone Vidar uses (or would use): `None` when it
+    /// has no volume control or none is connected. Re-read every few seconds, since other
+    /// apps (Discord, Teams) may change it.
+    pub mic_volume: Option<vidar_win::sys::EndpointVolume>,
     pub mic_boost_db: f64,
     pub vad_threshold: f64,
     pub engine: String,
@@ -226,6 +230,10 @@ pub struct View {
 pub enum Cmd {
     Toggle,
     SelectInput(Option<String>),
+    /// Windows volume of the microphone (0..1), applied at once (Windows keeps it).
+    SetMicVolume(f32),
+    /// Mute or unmute the microphone in Windows.
+    SetMicMuted(bool),
     SetBoost(f64),
     SetVad(f64),
     SetEngine(String),
@@ -306,6 +314,11 @@ struct Core {
     engine: Option<Engine>,
     /// The running engine's microphone is a built-in laptop mic (it gets extra gain).
     laptop_mic: bool,
+    /// The physical microphone the running engine opened (while Vidar is on, the Windows
+    /// default is Vidar AI Microphone, so the default cannot tell which one it is).
+    engine_input: Option<String>,
+    /// When the microphone's Windows volume was last read.
+    mic_volume_at: Instant,
     view: Arc<Mutex<View>>,
     repaint: Arc<Mutex<Option<eframe::egui::Context>>>,
     /// Restart attempts after a device loss.
@@ -502,6 +515,47 @@ impl Core {
 
     /// The microphone to open: the user's pick, else the Windows default unless that is
     /// virtual (the cable while routed), else the remembered or best physical mic.
+    /// The physical microphone whose Windows volume the window shows: the one the engine
+    /// opened while it runs, otherwise the one it would open.
+    fn mic_volume_target(&self, audio: &WinAudio) -> Option<String> {
+        match (&self.engine, &self.engine_input) {
+            (Some(_), Some(id)) => Some(id.clone()),
+            _ => self.resolve_input(audio).map(|e| e.id),
+        }
+    }
+
+    /// Read the microphone's Windows volume and publish it if it changed.
+    fn refresh_mic_volume(&mut self) {
+        self.mic_volume_at = Instant::now();
+        let vol = Self::audio().and_then(|a| {
+            let id = self.mic_volume_target(&a)?;
+            a.volume(&id)
+        });
+        if self
+            .view
+            .lock()
+            .map(|v| v.mic_volume != vol)
+            .unwrap_or(false)
+        {
+            self.publish(|v| v.mic_volume = vol);
+        }
+    }
+
+    /// Apply `change` to the microphone's Windows volume, then show the result.
+    fn change_mic_volume(
+        &mut self,
+        change: impl FnOnce(&WinAudio, &str) -> Result<(), vidar_win::Error>,
+    ) {
+        if let Some(audio) = Self::audio() {
+            if let Some(id) = self.mic_volume_target(&audio) {
+                if let Err(e) = change(&audio, &id) {
+                    warn!("microphone volume: {e}");
+                }
+            }
+        }
+        self.refresh_mic_volume();
+    }
+
     fn resolve_input(&self, audio: &WinAudio) -> Option<Endpoint> {
         let caps = audio.endpoints(Flow::Capture);
         if let Some(e) = resolve_saved(
@@ -558,6 +612,7 @@ impl Core {
         self.status(format!("Starting with {}...", input.name), Tone::Busy);
 
         self.laptop_mic = input.is_laptop_mic();
+        self.engine_input = Some(input.id.clone());
         let settings = EngineSettings::from_config(&self.cfg, self.laptop_mic);
         let (model, active, errors) = if settings.denoise_enabled {
             create_with_fallback(&self.model_spec())
@@ -1198,6 +1253,13 @@ impl Core {
                 self.cfg.input_device_name = name;
                 self.save_now();
                 self.publish(|v| v.selected_input = id);
+                self.refresh_mic_volume();
+            }
+            Cmd::SetMicVolume(level) => {
+                self.change_mic_volume(|a, id| a.set_volume(id, level));
+            }
+            Cmd::SetMicMuted(muted) => {
+                self.change_mic_volume(|a, id| a.set_muted(id, muted));
             }
             Cmd::SetBoost(db) => {
                 self.cfg.mic_boost_db = db;
@@ -1399,6 +1461,7 @@ pub fn spawn(
         cable_names: None,
         inputs: Vec::new(),
         selected_input: cfg.input_endpoint_id.clone(),
+        mic_volume: None,
         mic_boost_db: cfg.mic_boost_db,
         vad_threshold: cfg.vad_threshold,
         engine: cfg.denoise_engine.clone(),
@@ -1456,6 +1519,8 @@ fn run(
         route,
         engine: None,
         laptop_mic: false,
+        engine_input: None,
+        mic_volume_at: Instant::now(),
         view,
         repaint,
         recover: None,
@@ -1518,6 +1583,11 @@ fn run(
         }
         if core.next_update_check.is_some_and(|t| Instant::now() >= t) {
             core.check_updates(false);
+        }
+        // Start/stop and device changes all end up here within two seconds, and so do
+        // changes other apps make.
+        if core.mic_volume_at.elapsed() > Duration::from_secs(2) {
+            core.refresh_mic_volume();
         }
         core.check_health();
     }

@@ -9,6 +9,7 @@ use windows::Win32::Devices::FunctionDiscovery::{
     PKEY_Device_EnumeratorName, PKEY_Device_FriendlyName,
 };
 use windows::Win32::Foundation::{PROPERTYKEY, RPC_E_CHANGED_MODE};
+use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
 use windows::Win32::Media::Audio::{
     eCapture, eCommunications, eConsole, eMultimedia, eRender, EDataFlow, ERole, IMMDevice,
     IMMDeviceEnumerator, MMDeviceEnumerator, PKEY_AudioEndpoint_FormFactor, Speakers,
@@ -317,6 +318,54 @@ impl WinAudio {
     pub fn set_icon(&self, id: &str, icon: &str) -> Result<(), Error> {
         self.set_endpoint_string(id, &PKEY_DeviceClass_IconPath, icon)
     }
+
+    fn endpoint_volume(&self, id: &str) -> Result<IAudioEndpointVolume, Error> {
+        let wid = wide(id);
+        // SAFETY: COM lookup by ID string, then activation of a standard interface.
+        unsafe {
+            self.enumerator
+                .GetDevice(PCWSTR(wid.as_ptr()))
+                .and_then(|dev| dev.Activate::<IAudioEndpointVolume>(CLSCTX_ALL, None))
+        }
+        .map_err(|e| Error::Com(e.to_string()))
+    }
+
+    /// The endpoint's Windows volume (the "Input volume" of a microphone in Sound settings):
+    /// level 0..1 and whether it is muted. `None` if the device has no volume control.
+    pub fn volume(&self, id: &str) -> Option<EndpointVolume> {
+        let vol = self.endpoint_volume(id).ok()?;
+        // SAFETY: plain getters on a live interface.
+        unsafe {
+            Some(EndpointVolume {
+                level: vol.GetMasterVolumeLevelScalar().ok()?,
+                muted: vol.GetMute().ok()?.as_bool(),
+            })
+        }
+    }
+
+    /// Set the endpoint's Windows volume (0..1, clamped). Other apps and Sound settings see
+    /// the change at once.
+    pub fn set_volume(&self, id: &str, level: f32) -> Result<(), Error> {
+        let vol = self.endpoint_volume(id)?;
+        // SAFETY: setter on a live interface; no event context.
+        unsafe { vol.SetMasterVolumeLevelScalar(level.clamp(0.0, 1.0), std::ptr::null()) }
+            .map_err(|e| Error::Com(e.to_string()))
+    }
+
+    /// Mute or unmute the endpoint in Windows.
+    pub fn set_muted(&self, id: &str, muted: bool) -> Result<(), Error> {
+        let vol = self.endpoint_volume(id)?;
+        // SAFETY: setter on a live interface; no event context.
+        unsafe { vol.SetMute(muted, std::ptr::null()) }.map_err(|e| Error::Com(e.to_string()))
+    }
+}
+
+/// An endpoint's Windows volume, see [`WinAudio::volume`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EndpointVolume {
+    /// 0..1, as the Sound settings slider shows it (0-100).
+    pub level: f32,
+    pub muted: bool,
 }
 
 impl AudioSystem for WinAudio {
@@ -399,5 +448,28 @@ mod tests {
             println!("default mic: {}", d.name);
             assert_eq!(sys.endpoint(&d.id).map(|e| e.id), Some(d.id));
         }
+    }
+
+    /// Changes the default microphone's Windows volume for a moment and puts it back:
+    /// `cargo test -p vidar-win -- --ignored mic_volume_round_trip`.
+    #[test]
+    #[ignore = "changes the real microphone volume briefly"]
+    fn mic_volume_round_trip() {
+        let sys = WinAudio::new().unwrap();
+        let mic = sys
+            .endpoints(Flow::Capture)
+            .into_iter()
+            .find(|e| !e.is_virtual())
+            .expect("a physical microphone");
+        let before = sys.volume(&mic.id).expect("volume control");
+        println!("{}: {before:?}", mic.name);
+        let probe = if before.level > 0.5 { 0.25 } else { 0.75 };
+        sys.set_volume(&mic.id, probe).unwrap();
+        let during = sys.volume(&mic.id).unwrap().level;
+        sys.set_volume(&mic.id, before.level).unwrap();
+        let after = sys.volume(&mic.id).unwrap();
+        assert!((during - probe).abs() < 0.02, "{during} != {probe}");
+        assert!((after.level - before.level).abs() < 0.02);
+        assert_eq!(after.muted, before.muted);
     }
 }
