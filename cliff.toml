@@ -4,7 +4,8 @@
 # for people who use Vidar: what they will notice, not how it was done.
 
 [changelog]
-# Must match the top of CHANGELOG.md exactly: --prepend replaces it there.
+# Used when the file is generated from scratch (`git-cliff -o CHANGELOG.md`); `cargo xtask
+# release` keeps the existing header and inserts the new section below it.
 header = """
 # Changelog
 

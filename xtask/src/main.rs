@@ -466,6 +466,41 @@ fn changelog_preview() -> Result<()> {
     run("git-cliff", &["--unreleased", "--strip", "header"])
 }
 
+/// Insert the section for `tag` (the commits since the last release) above the newest
+/// section of CHANGELOG.md, keeping everything else as it is. Done here rather than with
+/// `git-cliff --prepend`, which looks for its header byte for byte and so misses it when git
+/// has checked the file out with CRLF line endings.
+fn prepend_changelog(tag: &str) -> Result<()> {
+    let out = std::process::Command::new("git-cliff")
+        .current_dir(workspace_root())
+        .args(["--unreleased", "--tag", tag, "--strip", "all"])
+        .output()?;
+    if !out.status.success() {
+        return Err(format!(
+            "git-cliff failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )
+        .into());
+    }
+    let section = String::from_utf8(out.stdout)?.replace("\r\n", "\n");
+    let section = section.trim();
+    if section.is_empty() {
+        return Err("no feat, fix or perf commits since the last release".into());
+    }
+    let path = workspace_root().join("CHANGELOG.md");
+    let old = fs::read_to_string(&path)?.replace("\r\n", "\n");
+    // The header ends where the first version section starts.
+    let split = old.find("\n## ").map_or(old.len(), |i| i + 1);
+    let (header, rest) = old.split_at(split);
+    let mut new = format!("{}\n\n{section}\n", header.trim_end());
+    if !rest.trim().is_empty() {
+        new.push('\n');
+        new.push_str(rest);
+    }
+    fs::write(&path, new)?;
+    Ok(())
+}
+
 /// Set `[workspace.package] version` in the root Cargo.toml.
 fn set_workspace_version(version: &str) -> Result<()> {
     let path = workspace_root().join("Cargo.toml");
@@ -518,10 +553,7 @@ fn release(version: &str) -> Result<()> {
     set_workspace_version(version)?;
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     run(&cargo, &["update", "--workspace", "--offline", "--quiet"])?;
-    run(
-        "git-cliff",
-        &["--unreleased", "--tag", &tag, "--prepend", "CHANGELOG.md"],
-    )?;
+    prepend_changelog(&tag)?;
     run("git", &["add", "Cargo.toml", "Cargo.lock", "CHANGELOG.md"])?;
     run(
         "git",
