@@ -1,17 +1,19 @@
 name: Release
 
-# Push a tag like `v0.1.0` (matching [workspace.package] version in Cargo.toml) to build
-# the Windows package and installer with `cargo xtask installer`, zip the package and
-# publish a GitHub release. The app's updater looks for `vidar-<version>-setup.exe` and
-# `<that>.sha256` on the latest release, so keep those names.
-# Tags with a suffix (`v0.2.0-rc.1`) are published as pre-releases.
+# Push a tag like `v0.3.0` (matching [workspace.package] version in Cargo.toml; `cargo xtask
+# release 0.3.0` prepares both) to build the Windows packages and installers for x64 and
+# ARM64, zip the packages and publish a GitHub release.
+#
+# The app's updater looks for `vidar-<version>-setup.exe` (x64) or
+# `vidar-<version>-arm64-setup.exe` and `<that>.sha256` on the latest release, so keep
+# those names. Tags with a suffix (`v0.3.0-rc.1`) are published as pre-releases.
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing tag to (re)build and publish, e.g. v0.1.0"
+        description: "Existing tag to (re)build and publish, e.g. v0.3.0"
         required: true
 
 concurrency:
@@ -33,8 +35,17 @@ defaults:
 
 jobs:
   build:
-    name: build (windows x64)
-    runs-on: windows-latest
+    name: build (windows ${{ matrix.arch }})
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-latest
+          # Native ARM64: the tests run on the hardware the build is for.
+          - arch: arm64
+            runner: windows-11-arm
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -49,54 +60,27 @@ jobs:
           fi
           echo "VERSION=${version}" >> "$GITHUB_ENV"
 
-      # The release notes are this version's section of CHANGELOG.md (a pre-release without
-      # its own section uses "Unreleased"), followed by the download instructions.
-      # Checked before the long build, so a missing entry fails fast.
-      - name: Release notes from CHANGELOG.md
+      # The ARM64 image may not ship rustup.
+      - name: Install rustup if missing
         run: |
-          section() {
-            awk -v h="## $1" '
-              /^## / { if (found) exit; if ($0 == h || index($0, h " ") == 1) { found = 1; next } }
-              found' CHANGELOG.md
-          }
-          notes=$(section "$VERSION")
-          if [ -z "${notes//[[:space:]]/}" ] && [[ "$VERSION" == *-* ]]; then
-            notes=$(section "Unreleased")
+          if ! command -v rustup >/dev/null; then
+            host=$([ "${{ matrix.arch }}" = arm64 ] && echo aarch64 || echo x86_64)-pc-windows-msvc
+            curl -sSfL -o rustup-init.exe "https://static.rust-lang.org/rustup/dist/${host}/rustup-init.exe"
+            ./rustup-init.exe -y --profile minimal --default-toolchain none
+            rm rustup-init.exe
+            echo "$USERPROFILE/.cargo/bin" >> "$GITHUB_PATH"
           fi
-          if [ -z "${notes//[[:space:]]/}" ]; then
-            echo "::error file=CHANGELOG.md::No changelog entry for ${VERSION}. Add a '## ${VERSION}' section."
-            exit 1
-          fi
-          mkdir -p notes
-          {
-            printf '%s\n\n' "$notes"
-            cat <<'EOF'
-          ---
-
-          **Install:** download `vidar-*-setup.exe` and run it. It installs Vidar and the
-          virtual microphone (VB-CABLE) with one permission prompt, and later versions
-          update from inside the app.
-
-          **Portable:** download `vidar-*-windows-x64.zip`, extract it anywhere and run
-          `vidar.exe`. On first start Vidar offers to install the virtual microphone.
-
-          Windows 10 (1903+) / 11, 64-bit x86. Verify a download against its `.sha256`
-          file if you like. All changes: [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md).
-          EOF
-          } > notes/release-notes.md
-          cat notes/release-notes.md
-
       - run: rustup toolchain install # version + components from rust-toolchain.toml
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          shared-key: release
+          shared-key: release-${{ matrix.arch }}
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             third_party/rnnoise/model
             third_party/onnxruntime
             third_party/dpdfnet
-          key: vidar-assets-${{ hashFiles('xtask/src/main.rs') }}
+          key: vidar-assets-${{ matrix.arch }}-${{ hashFiles('xtask/src/main.rs') }}
 
       # Same gate as CI: never publish a build whose tests fail.
       - run: cargo xtask fetch
@@ -111,19 +95,27 @@ jobs:
       - name: Install Inno Setup
         run: |
           if [ ! -f "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" ]; then
-            choco install innosetup -y --no-progress
+            if command -v choco >/dev/null; then
+              choco install innosetup -y --no-progress
+            else
+              curl -sSfL -o is.exe https://jrsoftware.org/download.php/is.exe
+              ./is.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /ALLUSERS
+              rm is.exe
+            fi
           fi
 
-      # dist\vidar (the portable folder) plus dist\vidar-<version>-setup.exe and its .sha256,
-      # which the app's updater checks before running it.
+      # dist\vidar (the portable folder) plus the setup for this architecture and its
+      # .sha256, which the app's updater checks before running it.
       - name: Build package and installer
         run: cargo xtask installer
 
       - name: Zip and checksums
         shell: pwsh
+        env:
+          ARCH: ${{ matrix.arch }}
         run: |
-          $name = "vidar-$env:VERSION-windows-x64"
-          $setup = "vidar-$env:VERSION-setup.exe"
+          $name = "vidar-$env:VERSION-windows-$env:ARCH"
+          $setup = if ($env:ARCH -eq 'x64') { "vidar-$env:VERSION-setup.exe" } else { "vidar-$env:VERSION-$env:ARCH-setup.exe" }
           New-Item -ItemType Directory -Force out | Out-Null
           Compress-Archive -Path dist/vidar -DestinationPath "out/$name.zip" -CompressionLevel Optimal
           $hash = (Get-FileHash "out/$name.zip" -Algorithm SHA256).Hash.ToLower()
@@ -133,13 +125,8 @@ jobs:
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: vidar-release
+          name: vidar-release-${{ matrix.arch }}
           path: out/*
-          if-no-files-found: error
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: release-notes
-          path: notes/release-notes.md
           if-no-files-found: error
 
   publish:
@@ -149,14 +136,58 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ env.TAG }}
+          fetch-depth: 0 # git-cliff reads the history between tags
+      - uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
+        with:
+          tool: git-cliff
+
+      # The notes are this version's CHANGELOG.md section, which `cargo xtask release`
+      # generated from the commits. A tag made without it gets the same text generated here.
+      - name: Release notes
+        run: |
+          version="${TAG#v}"
+          notes=$(awk -v h="## ${version}" '
+            /^## / { if (found) exit; if ($0 == h || index($0, h " ") == 1) { found = 1; next } }
+            found' CHANGELOG.md)
+          if [ -z "${notes//[[:space:]]/}" ]; then
+            echo "::notice::CHANGELOG.md has no ${version} section; generating it from the commits"
+            notes=$(git-cliff --current --strip all | sed '1{/^## /d}')
+          fi
+          if [ -z "${notes//[[:space:]]/}" ]; then
+            notes="Maintenance release: no user-facing changes."
+          fi
+          mkdir -p notes
+          {
+            printf '%s\n\n' "$notes"
+            cat <<'EOF'
+          ---
+
+          **Install:** download the setup for your PC and run it. It installs Vidar and the
+          virtual microphone (VB-CABLE) with one permission prompt, plus the Microsoft Visual
+          C++ Runtime if it is missing, and later versions update from inside the app.
+
+          | PC | Setup | Portable |
+          |---|---|---|
+          | Most Windows PCs (Intel, AMD) | `vidar-*-setup.exe` | `vidar-*-windows-x64.zip` |
+          | Windows 11 on ARM (Snapdragon) | `vidar-*-arm64-setup.exe` | `vidar-*-windows-arm64.zip` |
+
+          **Portable:** extract the zip anywhere and run `vidar.exe`. On first start Vidar offers
+          to install the virtual microphone.
+
+          Windows 10 (1903+) or 11 (ARM64: Windows 11). Verify a download against its `.sha256`
+          file if you like. All changes: [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md).
+          EOF
+          } > notes/release-notes.md
+          cat notes/release-notes.md
+
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: vidar-release
+          pattern: vidar-release-*
+          merge-multiple: true
           path: out
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: release-notes
-          path: notes
       - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: ${{ env.TAG }}

@@ -29,7 +29,8 @@ pub struct Release {
     pub version: String,
     /// The release's page on GitHub.
     pub page_url: String,
-    /// `vidar-<version>-setup.exe` and its `.sha256`, when the release has them.
+    /// The setup for this PC and its `.sha256`, when the release has them: see
+    /// [`setup_names`].
     pub setup: Option<Asset>,
     pub setup_sha256: Option<Asset>,
 }
@@ -62,8 +63,20 @@ fn github_url(url: &str) -> bool {
         .any(|p| url.starts_with(p))
 }
 
-/// Read GitHub's `releases/latest` reply.
-pub fn parse_release(json: &str) -> Result<Release, String> {
+/// Setup file names to look for, best first. An ARM64 PC prefers the native ARM64 setup
+/// (also when this copy is the x64 build running emulated) and falls back to the x64 one,
+/// which Windows 11 on ARM runs too.
+pub fn setup_names(version: &str, arm64: bool) -> Vec<String> {
+    let x64 = format!("vidar-{version}-setup.exe");
+    if arm64 {
+        vec![format!("vidar-{version}-arm64-setup.exe"), x64]
+    } else {
+        vec![x64]
+    }
+}
+
+/// Read GitHub's `releases/latest` reply. `arm64`: the PC is ARM64.
+pub fn parse_release(json: &str, arm64: bool) -> Result<Release, String> {
     let v: serde_json::Value =
         serde_json::from_str(json).map_err(|e| format!("unexpected reply from GitHub: {e}"))?;
     if v["draft"].as_bool() == Some(true) || v["prerelease"].as_bool() == Some(true) {
@@ -96,11 +109,15 @@ pub fn parse_release(json: &str) -> Result<Release, String> {
                 .collect()
         })
         .unwrap_or_default();
-    let setup_name = format!("vidar-{version}-setup.exe");
     let find = |name: &str| assets.iter().find(|a| a.name == name).cloned();
+    // The setup and its checksum always come as a pair of the same name.
+    let (setup, setup_sha256) = setup_names(&version, arm64)
+        .iter()
+        .find_map(|name| Some((find(name)?, find(&format!("{name}.sha256"))?)))
+        .map_or((None, None), |(s, h)| (Some(s), Some(h)));
     Ok(Release {
-        setup: find(&setup_name),
-        setup_sha256: find(&format!("{setup_name}.sha256")),
+        setup,
+        setup_sha256,
         version,
         page_url,
     })
@@ -138,7 +155,7 @@ pub fn fetch_latest() -> Result<Release, String> {
         .into_body()
         .read_to_string()
         .map_err(net_err)?;
-    parse_release(&body)
+    parse_release(&body, vidar_win::native_arm64())
 }
 
 /// Was this copy installed by setup? Inno Setup keeps its uninstaller next to the program;
@@ -245,11 +262,51 @@ mod tests {
                 {"name": "vidar-0.2.0-setup.exe.sha256", "size": 90,
                  "browser_download_url": "https://github.com/skraga/vidar/releases/download/v0.2.0/vidar-0.2.0-setup.exe.sha256"}
             ]}"#;
-        let r = parse_release(json).unwrap();
+        let r = parse_release(json, false).unwrap();
         assert_eq!(r.version, "0.2.0");
         assert_eq!(r.setup.as_ref().unwrap().size, 1234);
         assert!(r.setup_sha256.unwrap().url.ends_with(".sha256"));
         assert!(r.page_url.ends_with("/v0.2.0"));
+        // A release without an ARM64 setup still updates an ARM64 PC, with the x64 one.
+        let r = parse_release(json, true).unwrap();
+        assert_eq!(r.setup.unwrap().name, "vidar-0.2.0-setup.exe");
+    }
+
+    #[test]
+    fn arm64_pcs_get_the_arm64_setup() {
+        let asset = |n: &str| {
+            format!(
+                r#"{{"name": "{n}", "size": 1, "browser_download_url": "https://github.com/skraga/vidar/releases/download/v0.3.0/{n}"}}"#
+            )
+        };
+        let names = [
+            "vidar-0.3.0-setup.exe",
+            "vidar-0.3.0-setup.exe.sha256",
+            "vidar-0.3.0-arm64-setup.exe",
+            "vidar-0.3.0-arm64-setup.exe.sha256",
+        ];
+        let json = format!(
+            r#"{{"tag_name": "v0.3.0", "assets": [{}]}}"#,
+            names.map(asset).join(",")
+        );
+        let arm = parse_release(&json, true).unwrap();
+        assert_eq!(arm.setup.unwrap().name, "vidar-0.3.0-arm64-setup.exe");
+        assert_eq!(
+            arm.setup_sha256.unwrap().name,
+            "vidar-0.3.0-arm64-setup.exe.sha256"
+        );
+        let x64 = parse_release(&json, false).unwrap();
+        assert_eq!(x64.setup.unwrap().name, "vidar-0.3.0-setup.exe");
+
+        // A setup without its checksum is never chosen.
+        let json = format!(
+            r#"{{"tag_name": "v0.3.0", "assets": [{}]}}"#,
+            [names[0], names[1], names[2]].map(asset).join(",")
+        );
+        assert_eq!(
+            parse_release(&json, true).unwrap().setup.unwrap().name,
+            "vidar-0.3.0-setup.exe"
+        );
     }
 
     #[test]
@@ -257,10 +314,10 @@ mod tests {
         let json = r#"{"tag_name": "v0.2.0", "html_url": "https://evil.example/x",
             "assets": [{"name": "vidar-0.2.0-setup.exe", "size": 1,
                         "browser_download_url": "https://evil.example/setup.exe"}]}"#;
-        let r = parse_release(json).unwrap();
+        let r = parse_release(json, false).unwrap();
         assert_eq!(r.page_url, RELEASES_PAGE);
         assert!(r.setup.is_none());
-        assert!(parse_release(r#"{"tag_name": "v0.3.0", "prerelease": true}"#).is_err());
+        assert!(parse_release(r#"{"tag_name": "v0.3.0", "prerelease": true}"#, false).is_err());
     }
 
     #[test]

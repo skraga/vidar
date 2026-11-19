@@ -20,8 +20,9 @@ env:
   CARGO_INCREMENTAL: 0
   RUST_BACKTRACE: 1
 
-# Vidar is Windows-only (WASAPI, windows-rs, winresource, x64 ONNX Runtime DLL, MSVC build of
-# RNNoise), so every job runs on windows-latest. Linux/macOS would not compile apps/vidar.
+# Vidar is Windows-only (WASAPI, windows-rs, winresource, ONNX Runtime DLL, MSVC build of
+# RNNoise), so every Rust job runs on Windows: x64 on windows-latest, and the tests also on
+# ARM64 (windows-11-arm). Linux/macOS would not compile apps/vidar.
 defaults:
   run:
     shell: bash
@@ -51,15 +52,33 @@ jobs:
             third_party/rnnoise/model
             third_party/onnxruntime
             third_party/dpdfnet
-          key: vidar-assets-${{ hashFiles('xtask/src/main.rs') }}
+          key: vidar-assets-x64-${{ hashFiles('xtask/src/main.rs') }}
       - run: cargo xtask fetch
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   test:
-    name: test
-    runs-on: windows-latest
+    name: test (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-latest
+          - arch: arm64
+            runner: windows-11-arm
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # The ARM64 image may not ship rustup.
+      - name: Install rustup if missing
+        run: |
+          if ! command -v rustup >/dev/null; then
+            host=$([ "${{ matrix.arch }}" = arm64 ] && echo aarch64 || echo x86_64)-pc-windows-msvc
+            curl -sSfL -o rustup-init.exe "https://static.rust-lang.org/rustup/dist/${host}/rustup-init.exe"
+            ./rustup-init.exe -y --profile minimal --default-toolchain none
+            rm rustup-init.exe
+            echo "$USERPROFILE/.cargo/bin" >> "$GITHUB_PATH"
+          fi
       - run: rustup toolchain install # version + components from rust-toolchain.toml
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -68,7 +87,7 @@ jobs:
             third_party/rnnoise/model
             third_party/onnxruntime
             third_party/dpdfnet
-          key: vidar-assets-${{ hashFiles('xtask/src/main.rs') }}
+          key: vidar-assets-${{ matrix.arch }}-${{ hashFiles('xtask/src/main.rs') }}
       - run: cargo xtask fetch
       # Golden tests need the models above; live device tests stay off (VIDAR_LIVE_TESTS unset).
       - run: cargo test --workspace --locked

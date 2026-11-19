@@ -28,15 +28,24 @@ Your mic → Vidar (filter → AI model → cleanup) → Vidar AI Microphone →
 
 ## Install
 
-Vidar needs Windows 10 (version 1903 or later) or Windows 11 on a 64-bit x86 PC. From the
-[Releases](../../releases) page, download either:
+Vidar needs Windows 10 (version 1903 or later) or Windows 11 on a 64-bit PC: Intel or AMD
+(x64), or ARM64 such as Snapdragon (Windows 11 only). From the [Releases](../../releases)
+page, download either:
 
-- **`vidar-<version>-setup.exe`** (recommended). It installs Vidar and the virtual microphone
-  with one permission prompt, adds Vidar to the Start menu and to *Installed apps*, and
-  later versions install from inside the app.
-- **`vidar-<version>-windows-x64.zip`** (portable). Extract it anywhere and run `vidar.exe`.
-  On first start it offers to install the virtual microphone. It does not update itself;
-  Vidar tells you when a new version is out and opens the download page.
+| | Intel / AMD | ARM64 |
+|---|---|---|
+| **Setup** (recommended) | `vidar-<version>-setup.exe` | `vidar-<version>-arm64-setup.exe` |
+| **Portable** | `vidar-<version>-windows-x64.zip` | `vidar-<version>-windows-arm64.zip` |
+
+- **Setup** installs Vidar and the virtual microphone with one permission prompt, plus the
+  Microsoft Visual C++ Runtime if your PC does not have it yet (downloaded from Microsoft).
+  It adds Vidar to the Start menu and to *Installed apps*, and later versions install from
+  inside the app.
+- **Portable**: extract it anywhere and run `vidar.exe`. On first start it offers to install
+  the virtual microphone. It does not update itself; Vidar tells you when a new version is
+  out and opens the download page. Voice HD needs the
+  [Microsoft Visual C++ Runtime](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist);
+  without it Vidar uses Voice.
 
 To build it from source instead, see [docs/development.md](docs/development.md#building). To get
 the same folder you can copy to another PC or zip up, run:

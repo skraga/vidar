@@ -3,8 +3,11 @@
 //!   fetch         RNNoise weights + default DPDFNet model, hash-checked
 //!   fetch --all   also the larger dpdfnet8 model
 //!   dist          release build + everything it needs, licences included, in dist\vidar
-//!   installer     dist, then dist\vidar-<version>-setup.exe (Inno Setup 6) and its .sha256
+//!   installer     dist, then the setup (Inno Setup 6) and its .sha256, for this machine's
+//!                 architecture (x64 or arm64)
 //!   outdated      check every bundled or downloaded component for a newer upstream version
+//!   changelog     preview the next release's changelog section (git-cliff, cliff.toml)
+//!   release <v>   set the version, write CHANGELOG.md from the commits, commit and tag
 
 use std::fs;
 use std::io::Read;
@@ -33,6 +36,25 @@ const DPDFNET_MODELS: [(&str, &str); 2] = [
         "7b3afbb260a08fe9af3d16e3bda992971be1e7e951d1dee7c2d235f5c43f5631",
     ),
 ];
+
+/// The Windows architecture being built, `x64` or `arm64`: the machine running xtask, since
+/// release builds are native (CI builds ARM64 on an ARM64 runner).
+fn arch() -> &'static str {
+    if cfg!(target_arch = "aarch64") {
+        "arm64"
+    } else {
+        "x64"
+    }
+}
+
+/// Release file names. x64 keeps the names used before ARM64 builds existed, which the
+/// updater in 0.2 looks for.
+fn setup_base_name(version: &str) -> String {
+    match arch() {
+        "x64" => format!("vidar-{version}-setup"),
+        a => format!("vidar-{version}-{a}-setup"),
+    }
+}
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -102,13 +124,14 @@ fn fetch_rnnoise() -> Result<()> {
 }
 
 /// Microsoft's official ONNX Runtime build (signed), extracted to third_party/onnxruntime.
-/// `VERSION` there records which one, so bumping `ORT_VERSION` fetches it again.
+/// `VERSION` there records which one ("1.32.0 x64"), so bumping `ORT_VERSION` fetches again.
 fn fetch_onnxruntime() -> Result<()> {
     let out = workspace_root().join("third_party").join("onnxruntime");
     let stamp = out.join("VERSION");
+    let want = format!("{ORT_VERSION} {}", arch());
     let have = fs::read_to_string(&stamp).unwrap_or_default();
-    if out.join("onnxruntime.dll").is_file() && have.trim() == ORT_VERSION {
-        println!("[OK] onnxruntime.dll {ORT_VERSION} already present");
+    if out.join("onnxruntime.dll").is_file() && have.trim() == want {
+        println!("[OK] onnxruntime.dll {want} already present");
         return Ok(());
     }
     let body = download(&format!(
@@ -122,8 +145,9 @@ fn fetch_onnxruntime() -> Result<()> {
     }
     fs::create_dir_all(&out)?;
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(body))?;
+    let dll = format!("runtimes/win-{}/native/onnxruntime.dll", arch());
     for (entry, name) in [
-        ("runtimes/win-x64/native/onnxruntime.dll", "onnxruntime.dll"),
+        (dll.as_str(), "onnxruntime.dll"),
         ("LICENSE", "LICENSE"),
         ("ThirdPartyNotices.txt", "ThirdPartyNotices.txt"),
     ] {
@@ -131,8 +155,8 @@ fn fetch_onnxruntime() -> Result<()> {
         zip.by_name(entry)?.read_to_end(&mut bytes)?;
         fs::write(out.join(name), bytes)?;
     }
-    fs::write(&stamp, ORT_VERSION)?;
-    println!("[OK] onnxruntime.dll {ORT_VERSION} -> {}", out.display());
+    fs::write(&stamp, &want)?;
+    println!("[OK] onnxruntime.dll {want} -> {}", out.display());
     Ok(())
 }
 
@@ -360,8 +384,9 @@ fn iscc() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("ISCC"))
 }
 
-/// `dist`, then the setup program from installer\vidar.iss:
-/// `dist\vidar-<version>-setup.exe` plus `<that>.sha256`, which the app's updater checks.
+/// `dist`, then the setup program from installer\vidar.iss for this machine's architecture:
+/// `dist\vidar-<version>-setup.exe` (x64) or `dist\vidar-<version>-arm64-setup.exe`, plus
+/// `<that>.sha256`, which the app's updater checks.
 /// Needs Inno Setup 6 (`winget install JRSoftware.InnoSetup`).
 fn installer(all_models: bool) -> Result<()> {
     dist(all_models)?;
@@ -389,6 +414,8 @@ fn installer(all_models: bool) -> Result<()> {
         .arg(format!("/DSourceDir={}", source.display()))
         .arg(format!("/DOutputDir={}", out.display()))
         .arg(format!("/DIconFile={}", icon.display()))
+        .arg(format!("/DArch={}", arch()))
+        .arg(format!("/DOutputBase={}", setup_base_name(&version)))
         .arg("vidar.iss")
         .status()
         .map_err(|e| {
@@ -401,7 +428,7 @@ fn installer(all_models: bool) -> Result<()> {
         return Err("Inno Setup failed".into());
     }
 
-    let name = format!("vidar-{version}-setup.exe");
+    let name = format!("{}.exe", setup_base_name(&version));
     let setup = out.join(&name);
     let hash = sha256_hex(&fs::read(&setup)?);
     fs::write(
@@ -409,6 +436,106 @@ fn installer(all_models: bool) -> Result<()> {
         format!("{hash}  {name}\n"),
     )?;
     println!("[OK] {}", setup.display());
+    Ok(())
+}
+
+/// Run a command in the workspace root; its output goes to the terminal.
+fn run(program: &str, args: &[&str]) -> Result<()> {
+    let status = std::process::Command::new(program)
+        .current_dir(workspace_root())
+        .args(args)
+        .status()
+        .map_err(|e| format!("cannot run {program} ({e})"))?;
+    if !status.success() {
+        return Err(format!("{program} {} failed", args.join(" ")).into());
+    }
+    Ok(())
+}
+
+fn git_cliff_check() -> Result<()> {
+    run("git-cliff", &["--version"]).map_err(|_| {
+        "git-cliff not found; install it with `cargo install git-cliff --locked` \
+         (or `winget install orhun.git-cliff`)"
+            .into()
+    })
+}
+
+/// Print the changelog section the next release would get (cliff.toml), without writing it.
+fn changelog_preview() -> Result<()> {
+    git_cliff_check()?;
+    run("git-cliff", &["--unreleased", "--strip", "header"])
+}
+
+/// Set `[workspace.package] version` in the root Cargo.toml.
+fn set_workspace_version(version: &str) -> Result<()> {
+    let path = workspace_root().join("Cargo.toml");
+    let toml = fs::read_to_string(&path)?;
+    let mut in_package = false;
+    let mut done = false;
+    let mut out = String::with_capacity(toml.len());
+    for line in toml.split_inclusive('\n') {
+        let t = line.trim();
+        if t.starts_with('[') {
+            in_package = t == "[workspace.package]";
+        } else if in_package && !done && t.starts_with("version") && t.contains('=') {
+            let eol = if line.ends_with("\r\n") { "\r\n" } else { "\n" };
+            out.push_str(&format!("version = \"{version}\"{eol}"));
+            done = true;
+            continue;
+        }
+        out.push_str(line);
+    }
+    if !done {
+        return Err("no version in [workspace.package] of Cargo.toml".into());
+    }
+    fs::write(path, out)?;
+    Ok(())
+}
+
+/// Prepare release `version` on a clean tree: set the version, write its CHANGELOG.md
+/// section from the commits since the last release (git-cliff, cliff.toml), commit both
+/// and tag `v<version>`. Pushing is left to you, after a look at the result.
+fn release(version: &str) -> Result<()> {
+    let core = version.split('-').next().unwrap_or_default();
+    let parts: Vec<&str> = core.split('.').collect();
+    if parts.len() != 3 || parts.iter().any(|p| p.parse::<u64>().is_err()) {
+        return Err(format!("'{version}' is not a version like 0.3.0 or 0.3.0-rc.1").into());
+    }
+    let tag = format!("v{version}");
+    let dirty = std::process::Command::new("git")
+        .current_dir(workspace_root())
+        .args(["status", "--porcelain", "--untracked-files=no"])
+        .output()?;
+    if !dirty.stdout.is_empty() {
+        return Err(
+            "commit or stash your changes first: the release commit must hold only \
+                    the version and the changelog"
+                .into(),
+        );
+    }
+    git_cliff_check()?;
+
+    set_workspace_version(version)?;
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    run(&cargo, &["update", "--workspace", "--offline", "--quiet"])?;
+    run(
+        "git-cliff",
+        &["--unreleased", "--tag", &tag, "--prepend", "CHANGELOG.md"],
+    )?;
+    run("git", &["add", "Cargo.toml", "Cargo.lock", "CHANGELOG.md"])?;
+    run(
+        "git",
+        &["commit", "-q", "-m", &format!("chore(release): {tag}")],
+    )?;
+    run(
+        "git",
+        &["tag", "-a", &tag, "-m", &format!("Vidar {version}")],
+    )?;
+    println!(
+        "[OK] {tag} committed and tagged. Read the CHANGELOG.md section (`git show`), \
+         reword it if needed (`git commit --amend`, then `git tag -f -a {tag} -m \"Vidar {version}\"`), \
+         then publish with: git push origin main {tag}"
+    );
     Ok(())
 }
 
@@ -592,6 +719,11 @@ fn main() -> Result<()> {
         }
         Some("dist") => dist(all),
         Some("installer") => installer(all),
+        Some("changelog") => changelog_preview(),
+        Some("release") => match args.get(1) {
+            Some(v) => release(v.trim_start_matches('v')),
+            None => Err("usage: cargo xtask release <version>, e.g. 0.3.0".into()),
+        },
         Some("outdated") => {
             if outdated()? {
                 std::process::exit(1);
@@ -600,7 +732,8 @@ fn main() -> Result<()> {
         }
         _ => {
             eprintln!(
-                "usage: cargo xtask fetch [--all] | dist [--all] | installer [--all] | outdated"
+                "usage: cargo xtask fetch [--all] | dist [--all] | installer [--all] | outdated \
+                 | changelog | release <version>"
             );
             std::process::exit(2);
         }
