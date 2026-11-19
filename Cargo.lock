@@ -3438,9 +3438,11 @@ dependencies = [
  "serde_json",
  "symphonia",
  "tempfile",
+ "vidar-brand",
  "vidar-denoise",
  "vidar-dsp",
  "vidar-win",
+ "winresource",
 ]
 
 [[package]]

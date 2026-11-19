@@ -24,3 +24,7 @@ serde_json = "1"
 
 [dev-dependencies]
 tempfile = "3"
+
+[build-dependencies]
+vidar-brand.workspace = true
+winresource = "0.1"
