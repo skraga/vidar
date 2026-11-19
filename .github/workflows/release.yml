@@ -1,7 +1,9 @@
 name: Release
 
 # Push a tag like `v0.1.0` (matching [workspace.package] version in Cargo.toml) to build
-# the Windows package with `cargo xtask dist`, zip it and publish a GitHub release.
+# the Windows package and installer with `cargo xtask installer`, zip the package and
+# publish a GitHub release. The app's updater looks for `vidar-<version>-setup.exe` and
+# `<that>.sha256` on the latest release, so keep those names.
 # Tags with a suffix (`v0.2.0-rc.1`) are published as pre-releases.
 on:
   push:
@@ -68,17 +70,28 @@ jobs:
         with:
           tool: cargo-about
 
-      - name: Build package
-        run: cargo xtask dist
+      # Inno Setup 6 builds the installer; the runner image may or may not have it.
+      - name: Install Inno Setup
+        run: |
+          if [ ! -f "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" ]; then
+            choco install innosetup -y --no-progress
+          fi
 
-      - name: Zip and checksum
+      # dist\vidar (the portable folder) plus dist\vidar-<version>-setup.exe and its .sha256,
+      # which the app's updater checks before running it.
+      - name: Build package and installer
+        run: cargo xtask installer
+
+      - name: Zip and checksums
         shell: pwsh
         run: |
           $name = "vidar-$env:VERSION-windows-x64"
+          $setup = "vidar-$env:VERSION-setup.exe"
           New-Item -ItemType Directory -Force out | Out-Null
           Compress-Archive -Path dist/vidar -DestinationPath "out/$name.zip" -CompressionLevel Optimal
           $hash = (Get-FileHash "out/$name.zip" -Algorithm SHA256).Hash.ToLower()
           "$hash  $name.zip" | Out-File -Encoding ascii "out/$name.zip.sha256"
+          Copy-Item "dist/$setup", "dist/$setup.sha256" out/
           Get-ChildItem out
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -109,6 +122,11 @@ jobs:
           body: |
             Windows 10 (1903+) / 11, 64-bit x86.
 
-            Download `vidar-*-windows-x64.zip`, extract it anywhere and run `vidar.exe`.
-            On first start Vidar offers to install the virtual microphone (VB-CABLE).
-            Verify the download against the `.sha256` file if you like.
+            **Install:** download `vidar-*-setup.exe` and run it. It installs Vidar and the
+            virtual microphone (VB-CABLE) with one permission prompt, and later versions
+            update from inside the app.
+
+            **Portable:** download `vidar-*-windows-x64.zip`, extract it anywhere and run
+            `vidar.exe`. On first start Vidar offers to install the virtual microphone.
+
+            Verify a download against its `.sha256` file if you like.

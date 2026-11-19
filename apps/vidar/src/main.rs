@@ -6,6 +6,7 @@ mod autostart;
 mod logging;
 mod tray;
 mod ui;
+mod update;
 mod worker;
 
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
@@ -59,6 +60,16 @@ fn main() {
             .unwrap_or_else(|| "vidar.ico".into());
         let ok = std::fs::write(&path, vidar_brand::ico(true)).is_ok();
         std::process::exit(if ok { 0 } else { 1 });
+    }
+    if args.iter().any(|a| a == "--quit") {
+        // For setup and uninstall: ask the running copy to stop (restoring the user's
+        // microphone) and wait until it has exited. Exit code 0 = gone, 1 = still running.
+        let outcome = instance::request_quit(Duration::from_secs(20));
+        std::process::exit(if outcome == instance::QuitOutcome::StillRunning {
+            1
+        } else {
+            0
+        });
     }
     let minimized = args.iter().any(|a| a == "--minimized");
 
@@ -116,7 +127,9 @@ fn main() {
     }
     cfg.start_with_windows = autostart::is_enabled();
 
-    let (handle, worker) = worker::spawn(cfg_path.clone(), cfg);
+    let (ui_tx, ui_rx) = mpsc::channel::<UiCmd>();
+    let ui_rx = Arc::new(Mutex::new(ui_rx));
+    let (handle, worker) = worker::spawn(cfg_path.clone(), cfg, ui_tx.clone());
     let worker = Arc::new(Mutex::new(Some(worker)));
 
     // Windows shutdown/logoff: stop and restore the mic before the process is killed.
@@ -130,8 +143,6 @@ fn main() {
         });
     }
 
-    let (ui_tx, ui_rx) = mpsc::channel::<UiCmd>();
-    let ui_rx = Arc::new(Mutex::new(ui_rx));
     let wake = {
         let h = handle.clone();
         move || {
@@ -157,16 +168,22 @@ fn main() {
             .expect("tray thread");
     }
 
-    // A second launch asks us to show the window.
+    // A second launch asks us to show the window; `vidar.exe --quit` (setup) asks us to exit.
     {
         let (g, tx, wake) = (guard.clone(), ui_tx.clone(), wake.clone());
         std::thread::Builder::new()
             .name("vidar-instance".into())
             .spawn(move || loop {
-                if g.wait_show_request(1000) {
-                    let _ = tx.send(UiCmd::Show(None));
-                    wake();
-                }
+                let cmd = match g.wait_request(1000) {
+                    Some(instance::Request::Show) => UiCmd::Show(None),
+                    Some(instance::Request::Quit) => {
+                        info!("asked to quit by another process (setup)");
+                        UiCmd::Quit
+                    }
+                    None => continue,
+                };
+                let _ = tx.send(cmd);
+                wake();
             })
             .expect("instance thread");
     }

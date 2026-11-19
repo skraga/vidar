@@ -13,7 +13,8 @@ use eframe::egui::{
 };
 
 use crate::worker::{
-    Cmd, Handle, InstallState, RunState, TestPhase, Tone, Track, VariantView, View, TEST_OPTIONS,
+    Cmd, Handle, InstallState, RunState, TestPhase, Tone, Track, UpdatePhase, VariantView, View,
+    TEST_OPTIONS,
 };
 use crate::UiCmd;
 
@@ -1538,6 +1539,7 @@ impl VidarWindow {
     // ------------------------------------------------------------ Home
 
     fn home(&mut self, ui: &mut egui::Ui, p: &Pal, v: &View) {
+        self.update_notice(ui, p, v);
         if !v.cable_installed && v.install == InstallState::Idle {
             card(ui, p, |ui| {
                 ui.label(
@@ -2922,6 +2924,9 @@ impl VidarWindow {
         });
         ui.add_space(8.0);
 
+        self.updates_card(ui, p, v);
+        ui.add_space(8.0);
+
         card(ui, p, |ui| {
             section_help(ui, p, "Virtual microphone", TIP_INSTALL);
             ui.horizontal(|ui| {
@@ -3380,6 +3385,115 @@ pub fn run_window(
     );
     if let Err(e) = r {
         log::warn!("window failed: {e}");
+    }
+}
+
+// ------------------------------------------------------------ Updates
+// One block: the Home notice and the Settings card.
+
+const TIP_UPDATES: Tip = ("Check for updates", "About once a day Vidar asks GitHub for the latest version number. No personal data is sent. Installed copies can update themselves; the portable zip opens the download page.");
+
+impl VidarWindow {
+    /// Home: a short notice while a newer version is available.
+    fn update_notice(&mut self, ui: &mut egui::Ui, p: &Pal, v: &View) {
+        let Some((version, page)) = v.update.available.clone() else {
+            return;
+        };
+        card(ui, p, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(format!("Vidar {version} is available"))
+                        .font(semi(14.0))
+                        .color(p.text),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    self.update_action(ui, p, v, &page);
+                });
+            });
+            update_error(ui, p, v);
+        });
+        ui.add_space(8.0);
+    }
+
+    /// "Update now" for installed copies, "Download" for the portable zip, or progress.
+    fn update_action(&self, ui: &mut egui::Ui, p: &Pal, v: &View, page: &str) {
+        match v.update.phase {
+            UpdatePhase::Downloading(f) => {
+                ui.label(
+                    RichText::new(format!("Downloading... {:.0}%", f * 100.0))
+                        .small()
+                        .color(p.muted),
+                );
+            }
+            UpdatePhase::Launching => {
+                ui.label(
+                    RichText::new("Starting the installer...")
+                        .small()
+                        .color(p.muted),
+                );
+            }
+            _ if v.update.installed => {
+                if primary(ui, p, "Update now", 110.0) {
+                    self.handle.send(Cmd::InstallUpdate);
+                }
+            }
+            _ => {
+                if secondary(ui, p, "Download").clicked() {
+                    open_url(page);
+                }
+            }
+        }
+    }
+
+    /// Settings: the automatic check, "Check now" and what the last check found.
+    fn updates_card(&mut self, ui: &mut egui::Ui, p: &Pal, v: &View) {
+        card(ui, p, |ui| {
+            section(ui, p, "Updates");
+            if switch_row(
+                ui,
+                p,
+                "Check for updates",
+                "About once a day, from GitHub",
+                v.update.enabled,
+                TIP_UPDATES,
+            ) {
+                self.handle.send(Cmd::SetCheckUpdates(!v.update.enabled));
+            }
+            ui.add_space(4.0);
+            let current = env!("CARGO_PKG_VERSION");
+            ui.horizontal(|ui| {
+                let (text, color) = match (&v.update.available, v.update.phase) {
+                    (_, UpdatePhase::Checking) => ("Checking...".to_string(), p.muted),
+                    (Some((ver, _)), _) => (format!("Vidar {ver} is available"), p.accent),
+                    (None, _) if v.update.up_to_date => {
+                        (format!("You have the latest version ({current})"), p.text)
+                    }
+                    (None, _) => (format!("Version {current}"), p.muted),
+                };
+                ui.label(RichText::new(text).color(color));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if let Some((_, page)) = &v.update.available {
+                        self.update_action(ui, p, v, page);
+                    } else {
+                        let busy = v.update.phase != UpdatePhase::Idle;
+                        if ui
+                            .add_enabled_ui(!busy, |ui| secondary(ui, p, "Check now"))
+                            .inner
+                            .clicked()
+                        {
+                            self.handle.send(Cmd::CheckUpdates);
+                        }
+                    }
+                });
+            });
+            update_error(ui, p, v);
+        });
+    }
+}
+
+fn update_error(ui: &mut egui::Ui, p: &Pal, v: &View) {
+    if let Some(e) = &v.update.error {
+        ui.label(RichText::new(e).small().color(p.danger));
     }
 }
 

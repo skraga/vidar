@@ -39,10 +39,28 @@ Releases are built by [`.github/workflows/release.yml`](../.github/workflows/rel
 2. Tag and push: `git tag v0.2.0 && git push origin main v0.2.0`.
 
 The workflow checks that the tag matches the Cargo version, runs the tests, builds the package
-with `cargo xtask dist` (which needs cargo-about for `licenses\THIRD_PARTY_LICENSES.html`; the
-CI `cargo-about` job checks it on every push) and publishes `vidar-<version>-windows-x64.zip` plus its `.sha256` as a
-GitHub release with generated notes. Tags with a suffix (`v0.2.0-rc.1`) become pre-releases.
-To rebuild an existing tag, run the workflow by hand (**Actions → Release → Run workflow**).
+and installer with `cargo xtask installer` (which needs cargo-about for
+`licenses\THIRD_PARTY_LICENSES.html`, checked by the CI `cargo-about` job on every push, and
+Inno Setup 6, installed on the runner) and publishes `vidar-<version>-setup.exe` and
+`vidar-<version>-windows-x64.zip`, each with its `.sha256`, as a GitHub release with
+generated notes. Tags with a suffix (`v0.2.0-rc.1`) become pre-releases, which the app's
+update check skips. To rebuild an existing tag, run the workflow by hand
+(**Actions → Release → Run workflow**).
+
+The app's updater relies on those asset names: it reads the latest release from the GitHub
+API, downloads `vidar-<version>-setup.exe`, checks it against `<that>.sha256` and runs it
+with `/SILENT /SUPPRESSMSGBOXES /NORESTART /RELAUNCH`.
+
+### The installer
+
+[installer/vidar.iss](../installer/vidar.iss) (Inno Setup 6) installs `dist\vidar` into
+Program Files for all users, so one UAC prompt covers the program and the driver. Before it
+replaces files, setup runs the new `vidar.exe --quit`: the running copy stops, gives the user's
+microphone back and exits, and `--quit` waits for that (exit code 0 = gone, 1 = still running).
+Restart Manager closes copies that do not answer. Uninstall does the same, removes the
+*Start with Windows* entry, and asks about the driver and the settings. Never change its
+`AppId`: that is how upgrades find the installation. The app counts as installed (and
+updates itself) when `unins000.exe` sits next to `vidar.exe`.
 
 ## Layout
 
@@ -77,7 +95,8 @@ flowchart TB
 | `bench` | Quality benchmark ([benchmarks.md](benchmarks.md)) |
 | `drivers/vbcable` | VB-Audio Virtual Cable driver pack, unmodified |
 | `third_party/rnnoise` | Vendored RNNoise source ([README](../third_party/rnnoise/README.md)) |
-| `xtask` | `cargo xtask fetch` |
+| `installer` | Inno Setup script for `vidar-<version>-setup.exe` |
+| `xtask` | `cargo xtask fetch`, `dist`, `installer` |
 
 ## Tests
 
@@ -169,6 +188,8 @@ Hand-edited values are clamped to safe ranges on load.
 | `raw_capture` | Ask Windows for the mic signal without vendor "enhancements" | `false` |
 | `start_with_windows` | Start at sign-in | `false` |
 | `ui_theme` | `auto`, `light` or `dark` | `auto` |
+| `check_updates` | Ask GitHub for the latest version about once a day | `true` |
+| `last_update_check` | When the last automatic check ran (seconds since 1970) | `0` |
 | `input_endpoint_id`, `input_device_name` | The chosen microphone (empty: the Windows default) | — |
 
 Written by the app, not meant to be edited: `version`, `is_swapped` and `original_mic_id`
