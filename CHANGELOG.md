@@ -1,10 +1,9 @@
 # Changelog
 
-What changed in each Vidar release, newest first. The release workflow publishes each
-version's section as its GitHub release notes, so write for people who use Vidar, not for
-developers. Put changes for the next release under **Unreleased**.
-
-## Unreleased
+What changed in each Vidar release, newest first. Sections are generated from commit
+messages by [git-cliff](https://git-cliff.org) when a release is prepared
+(`cargo xtask release <version>`), and each one is published as that version's GitHub
+release notes.
 
 ## 0.2.0 — 2026-11-19
 
