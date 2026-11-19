@@ -132,7 +132,7 @@ debugging.
 
 | | |
 |---|---|
-| Location | `models/` (not in git; fetched by `cargo xtask fetch`) |
+| Location | `third_party/dpdfnet/` (not in git; fetched by `cargo xtask fetch`, shipped as `models/*.onnx` next to the executable) |
 | Source | https://huggingface.co/Ceva-IP/DPDFNet (files `onnx/dpdfnet2_48khz_hr.onnx` and `onnx/dpdfnet8_48khz_hr.onnx`); code at https://github.com/ceva-ip/DPDFNet |
 | Version | Hugging Face repo revision `dd6818d00f50c836fed43a6243ebe49116de5964` (last modified 2026-07-05). SHA-256 values: `dpdfnet2_48khz_hr` `7f0575a5...91dc14b`, `dpdfnet8_48khz_hr` `7b3afbb2...c5f5631` |
 | Licence | **Apache-2.0**. The model card declares `license: apache-2.0` and ends with "## License — Apache-2.0"; the GitHub repo has the full Apache-2.0 `LICENSE` file. No NOTICE file and no use restrictions (non-commercial or otherwise) were found. |

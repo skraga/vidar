@@ -166,8 +166,8 @@ fn main() -> ExitCode {
     if let Some(d) = &cli.models_dir {
         model_dirs.push(d.clone());
     }
-    // Development builds run from target\: use the repo's models folder.
-    model_dirs.extend(vidar_denoise::repo_path("models"));
+    // Development builds run from target\: use the models fetched into third_party/dpdfnet.
+    model_dirs.extend(vidar_denoise::repo_path("third_party/dpdfnet"));
 
     let opts = CleanOptions {
         no_model: cli.no_model,

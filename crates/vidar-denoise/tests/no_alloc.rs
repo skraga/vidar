@@ -38,7 +38,7 @@ static GLOBAL: Counting = Counting;
 
 #[test]
 fn processing_a_frame_does_not_allocate() {
-    let models = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../models");
+    let models = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../third_party/dpdfnet");
     let frames: Vec<Frame> = (0..200)
         .map(|n| {
             core::array::from_fn(|i| {

@@ -5,7 +5,7 @@
 # Downloaded by `cargo xtask fetch` (large binaries, checked by SHA-256)
 /third_party/rnnoise/model/
 /third_party/onnxruntime/
-/models/
+/third_party/dpdfnet/
 
 # Python environment for the benchmark tool
 /.venv/

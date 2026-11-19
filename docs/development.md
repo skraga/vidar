@@ -12,8 +12,9 @@ cargo test --workspace
 ```
 
 `cargo xtask fetch` downloads into `third_party/rnnoise/model/`, `third_party/onnxruntime/`
-and `models/`. All three are git-ignored. It fetches only the default DPDFNet model,
-`dpdfnet2_48khz_hr`; `cargo xtask fetch --all` also fetches the larger `dpdfnet8_48khz_hr`.
+and `third_party/dpdfnet/`. All three are git-ignored. It fetches only the default DPDFNet
+model, `dpdfnet2_48khz_hr`; `cargo xtask fetch --all` also fetches the larger
+`dpdfnet8_48khz_hr`.
 Run the fetch before building or testing: the RNNoise build needs its weights, and
 `cargo test --workspace` fails without the DPDFNet model and ONNX Runtime.
 
@@ -32,8 +33,8 @@ kept current by Dependabot. Set `GITHUB_TOKEN` if GitHub's anonymous rate limit 
 
 Where they are looked for at run time:
 
-- DPDFNet models: `--models-dir` (CLI only), the repo's `models/` (development builds of the
-  CLI), `%VIDAR_MODELS_DIR%`, then `models\` next to the executable.
+- DPDFNet models: `--models-dir` (CLI only), the repo's `third_party/dpdfnet/` (development
+  builds), `%VIDAR_MODELS_DIR%`, then `models\` next to the executable.
 - `onnxruntime.dll`: `%ORT_DYLIB_PATH%`, next to the executable, then
   `third_party/onnxruntime/` in the repo.
 

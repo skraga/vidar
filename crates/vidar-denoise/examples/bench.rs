@@ -127,7 +127,7 @@ fn main() {
         let spec = DenoiseSpec {
             engine,
             dpdfnet_vad: vad.into(),
-            model_dirs: vec![root.join("models")],
+            model_dirs: vec![root.join("third_party").join("dpdfnet")],
             ..DenoiseSpec::default()
         };
         let mut model = match create(&spec) {
@@ -180,7 +180,7 @@ Digital silence after speech, 10 s (us/frame: mean / p99 / max)"
         let spec = DenoiseSpec {
             engine,
             dpdfnet_vad: vad.into(),
-            model_dirs: vec![root.join("models")],
+            model_dirs: vec![root.join("third_party").join("dpdfnet")],
             ..DenoiseSpec::default()
         };
         for ftz in [false, true] {

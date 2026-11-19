@@ -41,9 +41,9 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
-/// DPDFNet models folder (not in git; filled by `cargo xtask fetch`).
+/// DPDFNet models folder, third_party/dpdfnet (not in git; filled by `cargo xtask fetch`).
 pub fn models_dir() -> PathBuf {
-    workspace_root().join("models")
+    workspace_root().join("third_party").join("dpdfnet")
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {

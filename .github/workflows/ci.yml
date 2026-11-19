@@ -50,7 +50,7 @@ jobs:
           path: |
             third_party/rnnoise/model
             third_party/onnxruntime
-            models
+            third_party/dpdfnet
           key: vidar-assets-${{ hashFiles('xtask/src/main.rs') }}
       - run: cargo xtask fetch
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -67,7 +67,7 @@ jobs:
           path: |
             third_party/rnnoise/model
             third_party/onnxruntime
-            models
+            third_party/dpdfnet
           key: vidar-assets-${{ hashFiles('xtask/src/main.rs') }}
       - run: cargo xtask fetch
       # Golden tests need the models above; live device tests stay off (VIDAR_LIVE_TESTS unset).

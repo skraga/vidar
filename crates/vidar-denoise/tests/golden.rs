@@ -124,7 +124,7 @@ fn make_model(cfg: &Config) -> Option<Box<dyn Denoiser>> {
     let spec = DenoiseSpec {
         engine,
         dpdfnet_vad: vad.into(),
-        model_dirs: vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("../../models")],
+        model_dirs: vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("../../third_party/dpdfnet")],
         ..DenoiseSpec::default()
     };
     Some(create(&spec).expect("model should load"))

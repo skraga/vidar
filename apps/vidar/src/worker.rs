@@ -346,8 +346,8 @@ fn models_dirs() -> Vec<PathBuf> {
     {
         v.push(dir.join("models"));
     }
-    // Development builds run from target\ also find the repo's models.
-    v.extend(vidar_denoise::repo_path("models"));
+    // Development builds run from target\ also find the models fetched into third_party/dpdfnet.
+    v.extend(vidar_denoise::repo_path("third_party/dpdfnet"));
     v
 }
 

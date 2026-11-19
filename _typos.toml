@@ -1,6 +1,6 @@
 # typos spell-checker config (pre-commit hook). Add project jargon here instead of renaming code.
 [files]
-extend-exclude = ["drivers/", "third_party/", "models/", "tests/golden/", "*.csv"]
+extend-exclude = ["drivers/", "third_party/", "tests/golden/", "*.csv"]
 
 [default.extend-words]
 PN = "PN" # split from "PNGs"

@@ -58,7 +58,7 @@ jobs:
           path: |
             third_party/rnnoise/model
             third_party/onnxruntime
-            models
+            third_party/dpdfnet
           key: vidar-assets-${{ hashFiles('xtask/src/main.rs') }}
 
       # Same gate as CI: never publish a build whose tests fail.
