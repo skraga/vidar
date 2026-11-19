@@ -4,6 +4,7 @@
 //!   fetch --all   also the larger dpdfnet8 model
 //!   dist          release build + everything it needs, licences included, in dist\vidar
 //!   installer     dist, then dist\vidar-<version>-setup.exe (Inno Setup 6) and its .sha256
+//!   outdated      check every bundled or downloaded component for a newer upstream version
 
 use std::fs;
 use std::io::Read;
@@ -14,8 +15,13 @@ use sha2::{Digest, Sha256};
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 const DPDFNET_BASE: &str = "https://huggingface.co/Ceva-IP/DPDFNet/resolve/main/onnx";
+/// ONNX Runtime comes from Microsoft's NuGet package: the GitHub repository (and its release
+/// zips) disappeared on 2026-11-18. The package holds the same Microsoft-signed DLL.
 const ORT_VERSION: &str = "1.32.0";
-const ORT_ZIP_SHA256: &str = "aaa1d04fcf86bd31e84b90bc0cbde80e632bd0720dcc5d8ba05c4fe45c09d127";
+const ORT_NUPKG_SHA256: &str = "a9150bc2992cbbb6722070da9910e1ffa989a8bfc67bdd5bb8e745ca755641db";
+const ORT_NUGET: &str = "https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime";
+/// `VBCABLE_Driver_Pack<N>.zip` that drivers\vbcable was taken from.
+const VBCABLE_PACK: u32 = 46;
 
 const DPDFNET_MODELS: [(&str, &str); 2] = [
     (
@@ -96,32 +102,36 @@ fn fetch_rnnoise() -> Result<()> {
 }
 
 /// Microsoft's official ONNX Runtime build (signed), extracted to third_party/onnxruntime.
+/// `VERSION` there records which one, so bumping `ORT_VERSION` fetches it again.
 fn fetch_onnxruntime() -> Result<()> {
     let out = workspace_root().join("third_party").join("onnxruntime");
-    let dll = out.join("onnxruntime.dll");
-    if dll.is_file() {
-        println!("[OK] onnxruntime.dll already present");
+    let stamp = out.join("VERSION");
+    let have = fs::read_to_string(&stamp).unwrap_or_default();
+    if out.join("onnxruntime.dll").is_file() && have.trim() == ORT_VERSION {
+        println!("[OK] onnxruntime.dll {ORT_VERSION} already present");
         return Ok(());
     }
-    let url = format!("https://github.com/microsoft/onnxruntime/releases/download/v{ORT_VERSION}/onnxruntime-win-x64-{ORT_VERSION}.zip");
-    let body = download(&url)?;
+    let body = download(&format!(
+        "{ORT_NUGET}/{ORT_VERSION}/microsoft.ml.onnxruntime.{ORT_VERSION}.nupkg"
+    ))?;
     let actual = sha256_hex(&body);
-    if actual != ORT_ZIP_SHA256 {
-        return Err(format!("ONNX Runtime checksum mismatch: {actual} != {ORT_ZIP_SHA256}").into());
+    if actual != ORT_NUPKG_SHA256 {
+        return Err(
+            format!("ONNX Runtime checksum mismatch: {actual} != {ORT_NUPKG_SHA256}").into(),
+        );
     }
     fs::create_dir_all(&out)?;
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(body))?;
-    for name in ["onnxruntime.dll", "LICENSE", "ThirdPartyNotices.txt"] {
-        let suffix = format!("/{name}");
-        let entry = (0..zip.len())
-            .find(|&i| matches!(zip.name_for_index(i), Some(Ok(n)) if n.ends_with(&suffix)));
-        if let Some(i) = entry {
-            let mut f = zip.by_index(i)?;
-            let mut bytes = Vec::new();
-            f.read_to_end(&mut bytes)?;
-            fs::write(out.join(name), bytes)?;
-        }
+    for (entry, name) in [
+        ("runtimes/win-x64/native/onnxruntime.dll", "onnxruntime.dll"),
+        ("LICENSE", "LICENSE"),
+        ("ThirdPartyNotices.txt", "ThirdPartyNotices.txt"),
+    ] {
+        let mut bytes = Vec::new();
+        zip.by_name(entry)?.read_to_end(&mut bytes)?;
+        fs::write(out.join(name), bytes)?;
     }
+    fs::write(&stamp, ORT_VERSION)?;
     println!("[OK] onnxruntime.dll {ORT_VERSION} -> {}", out.display());
     Ok(())
 }
@@ -402,6 +412,174 @@ fn installer(all_models: bool) -> Result<()> {
     Ok(())
 }
 
+fn get_text(url: &str) -> Result<String> {
+    let mut req = ureq::get(url).header("User-Agent", "vidar-xtask");
+    // Optional, only to lift GitHub's anonymous rate limit; sent to api.github.com only.
+    if url.starts_with("https://api.github.com/") {
+        if let Ok(token) = std::env::var("GITHUB_TOKEN") {
+            req = req.header("Authorization", &format!("Bearer {token}"));
+        }
+    }
+    Ok(req.call()?.into_body().read_to_string()?)
+}
+
+fn get_json(url: &str) -> Result<serde_json::Value> {
+    Ok(serde_json::from_str(&get_text(url)?)?)
+}
+
+/// `1.32.0` -> `[1, 32, 0]`; `None` for pre-releases such as `1.33.0-rc1`.
+fn stable_version(v: &str) -> Option<Vec<u64>> {
+    v.split('.').map(|p| p.parse().ok()).collect()
+}
+
+/// One line of the `outdated` report. Returns whether an update is available.
+fn report(what: &str, check: impl FnOnce() -> Result<Option<String>>) -> bool {
+    match check() {
+        Ok(None) => {
+            println!("[OK]  {what}");
+            false
+        }
+        Ok(Some(news)) => {
+            println!("[NEW] {what}: {news}");
+            true
+        }
+        Err(e) => {
+            println!("[??]  {what}: check failed: {e}");
+            false
+        }
+    }
+}
+
+/// Compares every pinned component with its upstream and says what is newer. Changes nothing.
+/// Exits with 1 when something is newer, so it can gate a scheduled job.
+fn outdated() -> Result<bool> {
+    let root = workspace_root();
+    let mut newer = false;
+
+    newer |= report(&format!("ONNX Runtime {ORT_VERSION}"), || {
+        let index = get_json(&format!("{ORT_NUGET}/index.json"))?;
+        let ours = stable_version(ORT_VERSION);
+        let latest = index["versions"]
+            .as_array()
+            .ok_or("no versions in the NuGet index")?
+            .iter()
+            .filter_map(|v| v.as_str())
+            .filter_map(|v| stable_version(v).map(|n| (n, v)))
+            .max();
+        Ok(match latest {
+            Some((n, v)) if Some(&n) > ours.as_ref() => Some(format!(
+                "{v} on NuGet. Bump ORT_VERSION and ORT_NUPKG_SHA256 in xtask/src/main.rs, and \
+                 check that the `ort` crate's api-NN feature (crates/vidar-denoise/Cargo.toml) \
+                 supports it"
+            )),
+            _ => None,
+        })
+    });
+
+    let hf = || get_json("https://huggingface.co/api/models/Ceva-IP/DPDFNet/tree/main/onnx");
+    let tree = hf();
+    for (name, pinned) in DPDFNET_MODELS {
+        newer |= report(&format!("DPDFNet {name}"), || {
+            let tree = tree.as_ref().map_err(|e| e.to_string())?;
+            let path = format!("onnx/{name}.onnx");
+            let file = tree
+                .as_array()
+                .and_then(|a| a.iter().find(|f| f["path"] == path.as_str()))
+                .ok_or("no longer on Hugging Face")?;
+            let upstream = file["lfs"]["oid"].as_str().unwrap_or_default();
+            Ok((upstream != pinned).then(|| {
+                format!("changed on Hugging Face (SHA-256 {upstream}); update DPDFNET_MODELS")
+            }))
+        });
+    }
+    newer |= report("DPDFNet 48 kHz model list", || {
+        let tree = tree.as_ref().map_err(|e| e.to_string())?;
+        let new: Vec<&str> = tree
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|f| {
+                f["path"]
+                    .as_str()?
+                    .strip_prefix("onnx/")?
+                    .strip_suffix(".onnx")
+            })
+            .filter(|n| n.contains("48khz") && !DPDFNET_MODELS.iter().any(|(m, _)| m == n))
+            .collect();
+        Ok((!new.is_empty()).then(|| format!("new model(s): {}", new.join(", "))))
+    });
+
+    let rn = root.join("third_party").join("rnnoise");
+    newer |= report("RNNoise source (third_party/rnnoise)", || {
+        let ours = fs::read_to_string(rn.join("UPSTREAM_COMMIT"))?;
+        let head = get_json("https://api.github.com/repos/xiph/rnnoise/commits/main")?;
+        let sha = head["sha"].as_str().ok_or("no commit sha")?;
+        Ok((sha != ours.trim()).then(|| {
+            let date = head["commit"]["committer"]["date"].as_str().unwrap_or("?");
+            format!(
+                "xiph/rnnoise main is at {sha} ({date}); vendored {}",
+                ours.trim()
+            )
+        }))
+    });
+    newer |= report("RNNoise weights", || {
+        let ours = fs::read_to_string(rn.join("model_version"))?;
+        let theirs = get_text("https://raw.githubusercontent.com/xiph/rnnoise/main/model_version")?;
+        Ok((theirs.trim() != ours.trim()).then(|| {
+            format!(
+                "upstream model_version is {}; update it together with the source",
+                theirs.trim()
+            )
+        }))
+    });
+
+    newer |= report(&format!("VB-CABLE Pack{VBCABLE_PACK}"), || {
+        let page = get_text("https://vb-audio.com/Cable/")?;
+        let latest = page
+            .split("VBCABLE_Driver_Pack")
+            .skip(1)
+            .filter_map(|s| {
+                let digits: String = s.chars().take_while(char::is_ascii_digit).collect();
+                digits.parse::<u32>().ok()
+            })
+            .max()
+            .ok_or("no driver pack link on vb-audio.com/Cable")?;
+        Ok((latest > VBCABLE_PACK).then(|| {
+            format!(
+                "Pack{latest} on vb-audio.com; replace drivers/vbcable with it unmodified and \
+                 update VBCABLE_PACK and THIRD_PARTY_NOTICES.md"
+            )
+        }))
+    });
+
+    // Rust crates: what `cargo update` would change within the current version requirements.
+    // (GitHub Actions pins are kept current by Dependabot.)
+    println!("[..]  Rust crates (cargo update --dry-run):");
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let out = std::process::Command::new(cargo)
+        .current_dir(&root)
+        .args(["update", "--dry-run"])
+        .output()?;
+    let text = String::from_utf8_lossy(&out.stderr);
+    let changes: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with("Updating ") && l.contains(" -> "))
+        .collect();
+    for line in &changes {
+        println!("        {line}");
+    }
+    if changes.is_empty() {
+        println!("        none within the current version requirements");
+    }
+    if let Some(note) = text.lines().find(|l| l.contains("behind latest")) {
+        println!("        {}", note.trim().trim_start_matches("note: "));
+    }
+    newer |= !changes.is_empty();
+
+    Ok(newer)
+}
+
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let all = args.iter().any(|a| a == "--all");
@@ -414,8 +592,16 @@ fn main() -> Result<()> {
         }
         Some("dist") => dist(all),
         Some("installer") => installer(all),
+        Some("outdated") => {
+            if outdated()? {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
         _ => {
-            eprintln!("usage: cargo xtask fetch [--all] | dist [--all] | installer [--all]");
+            eprintln!(
+                "usage: cargo xtask fetch [--all] | dist [--all] | installer [--all] | outdated"
+            );
             std::process::exit(2);
         }
     }

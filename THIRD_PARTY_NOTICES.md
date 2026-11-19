@@ -112,8 +112,8 @@ names of Xiph.Org and its contributors may not be used to endorse Vidar without 
 | | |
 |---|---|
 | Location | `third_party/onnxruntime/` (not in git; fetched by `cargo xtask fetch`, shipped as `onnxruntime.dll`) |
-| Source | https://github.com/microsoft/onnxruntime/releases/download/v1.32.0/onnxruntime-win-x64-1.32.0.zip |
-| Version | 1.32.0 (`ORT_VERSION` in `xtask/src/main.rs`; zip SHA-256 `aaa1d04f...c09d127`) |
+| Source | Microsoft's NuGet package [Microsoft.ML.OnnxRuntime 1.32.0](https://www.nuget.org/packages/Microsoft.ML.OnnxRuntime/1.32.0) (`runtimes/win-x64/native/onnxruntime.dll`, `LICENSE`, `ThirdPartyNotices.txt`); the same Microsoft-signed DLL as the GitHub release zip, which is no longer available |
+| Version | 1.32.0 (`ORT_VERSION` in `xtask/src/main.rs`; package SHA-256 `a9150bc2...5641db`) |
 | Licence | MIT (`third_party/onnxruntime/LICENSE`), plus third-party components listed in `third_party/onnxruntime/ThirdPartyNotices.txt` |
 | Copyright | Copyright (c) Microsoft Corporation |
 

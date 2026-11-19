@@ -17,6 +17,19 @@ and `models/`. All three are git-ignored. It fetches only the default DPDFNet mo
 Run the fetch before building or testing: the RNNoise build needs its weights, and
 `cargo test --workspace` fails without the DPDFNet model and ONNX Runtime.
 
+### Checking for newer components
+
+```shell
+cargo xtask outdated
+```
+
+compares every pinned component with its upstream and changes nothing: ONNX Runtime (NuGet),
+both DPDFNet models and any new 48 kHz model (Hugging Face), the vendored RNNoise source and
+its weights (xiph/rnnoise), the VB-CABLE driver pack (vb-audio.com), and the Rust crates that
+`cargo update` would move. Each line says `[OK]`, `[NEW]` with what to change, or `[??]` when
+a site could not be reached. It exits with 1 when something is newer. GitHub Actions pins are
+kept current by Dependabot. Set `GITHUB_TOKEN` if GitHub's anonymous rate limit gets in the way.
+
 Where they are looked for at run time:
 
 - DPDFNet models: `--models-dir` (CLI only), the repo's `models/` (development builds of the
@@ -96,7 +109,7 @@ flowchart TB
 | `drivers/vbcable` | VB-Audio Virtual Cable driver pack, unmodified |
 | `third_party/rnnoise` | Vendored RNNoise source ([README](../third_party/rnnoise/README.md)) |
 | `installer` | Inno Setup script for `vidar-<version>-setup.exe` |
-| `xtask` | `cargo xtask fetch`, `dist`, `installer` |
+| `xtask` | `cargo xtask fetch`, `dist`, `installer`, `outdated` |
 
 ## Tests
 
