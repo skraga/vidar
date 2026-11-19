@@ -3,13 +3,14 @@
 //!
 //! Light and dark palettes; "auto" follows the Windows app theme.
 
+use std::f32::consts::{FRAC_PI_2, PI, TAU};
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 
 use eframe::egui::{
-    self, pos2, vec2, Align2, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId,
-    Rect, RichText, Sense, Stroke, StrokeKind,
+    self, pos2, vec2, Align2, Color32, CornerRadius, FontId, Rect, RichText, Sense, Stroke,
+    StrokeKind,
 };
 
 use crate::worker::{
@@ -17,155 +18,17 @@ use crate::worker::{
 };
 use crate::UiCmd;
 
-// ---------------------------------------------------------------- palette
+// ---------------------------------------------------------------- tokens
 
-#[derive(Clone, Copy)]
-struct Pal {
-    bg: Color32,
-    surface: Color32,
-    surface2: Color32,
-    border: Color32,
-    text: Color32,
-    muted: Color32,
-    accent: Color32,
-    on_accent: Color32,
-    blue: Color32,
-    warn: Color32,
-    danger: Color32,
-    track_idle: Color32,
-}
+// Colours, spacing, radii, type sizes and control sizes come from `theme`; this file only
+// composes them. Interactive widgets below are drawn by hand and each one has the same states:
+// idle, hover, pressed, selected, disabled and keyboard focus (a ring that shows only after a
+// key press, as in Windows 11).
 
-const DARK: Pal = Pal {
-    bg: Color32::from_rgb(14, 17, 22),
-    surface: Color32::from_rgb(22, 27, 34),
-    surface2: Color32::from_rgb(31, 38, 48),
-    border: Color32::from_rgb(42, 51, 64),
-    text: Color32::from_rgb(230, 237, 243),
-    muted: Color32::from_rgb(139, 152, 168),
-    accent: Color32::from_rgb(45, 215, 115),
-    on_accent: Color32::from_rgb(6, 24, 14),
-    blue: Color32::from_rgb(88, 156, 255),
-    warn: Color32::from_rgb(240, 180, 50),
-    danger: Color32::from_rgb(239, 83, 80),
-    track_idle: Color32::from_rgb(120, 134, 152),
+use crate::theme::{
+    self, alpha, anim, focus_ring, focus_ring_circle, motion, pal, radius, semi, size, space,
+    tone_color, ty, Pal, DARK, LIGHT,
 };
-
-const LIGHT: Pal = Pal {
-    bg: Color32::from_rgb(237, 240, 244),
-    surface: Color32::from_rgb(255, 255, 255),
-    surface2: Color32::from_rgb(229, 233, 239),
-    border: Color32::from_rgb(206, 212, 221),
-    text: Color32::from_rgb(17, 24, 39),
-    muted: Color32::from_rgb(91, 102, 117),
-    accent: Color32::from_rgb(18, 161, 80),
-    on_accent: Color32::from_rgb(255, 255, 255),
-    blue: Color32::from_rgb(37, 99, 235),
-    warn: Color32::from_rgb(183, 121, 31),
-    danger: Color32::from_rgb(220, 38, 38),
-    track_idle: Color32::from_rgb(148, 160, 176),
-};
-
-fn pal(ui: &egui::Ui) -> Pal {
-    if ui.visuals().dark_mode {
-        DARK
-    } else {
-        LIGHT
-    }
-}
-
-fn tone_color(p: &Pal, t: Tone) -> Color32 {
-    match t {
-        Tone::Idle => p.muted,
-        Tone::Busy => p.blue,
-        Tone::Good => p.accent,
-        Tone::Warn => p.warn,
-        Tone::Bad => p.danger,
-    }
-}
-
-fn visuals(p: &Pal, dark: bool) -> egui::Visuals {
-    let mut v = if dark {
-        egui::Visuals::dark()
-    } else {
-        egui::Visuals::light()
-    };
-    v.panel_fill = p.bg;
-    v.window_fill = p.surface;
-    v.window_stroke = Stroke::new(1.0, p.border);
-    v.extreme_bg_color = p.surface2;
-    v.faint_bg_color = p.surface2;
-    v.override_text_color = Some(p.text);
-    v.selection.bg_fill = p.accent;
-    v.selection.stroke = Stroke::new(1.0, p.on_accent);
-    v.hyperlink_color = p.blue;
-    for w in [
-        &mut v.widgets.inactive,
-        &mut v.widgets.hovered,
-        &mut v.widgets.active,
-        &mut v.widgets.open,
-    ] {
-        w.corner_radius = CornerRadius::same(8);
-    }
-    v.widgets.inactive.weak_bg_fill = p.surface2;
-    v.widgets.inactive.bg_fill = p.surface2;
-    v.widgets.inactive.bg_stroke = Stroke::new(1.0, p.border);
-    v.widgets.hovered.weak_bg_fill = p.border;
-    v.widgets.hovered.bg_fill = p.border;
-    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, p.border);
-    v.window_corner_radius = CornerRadius::same(12);
-    v
-}
-
-pub fn setup_style(ctx: &egui::Context, theme: &str) {
-    let mut fonts = FontDefinitions::default();
-    fonts.font_data.insert(
-        "inter".into(),
-        Arc::new(FontData::from_static(include_bytes!(
-            "../../../assets/fonts/Inter-Regular.ttf"
-        ))),
-    );
-    fonts.font_data.insert(
-        "inter-semi".into(),
-        Arc::new(FontData::from_static(include_bytes!(
-            "../../../assets/fonts/Inter-SemiBold.ttf"
-        ))),
-    );
-    fonts
-        .families
-        .entry(FontFamily::Proportional)
-        .or_default()
-        .insert(0, "inter".into());
-    fonts.families.insert(
-        FontFamily::Name("semi".into()),
-        vec!["inter-semi".into(), "inter".into()],
-    );
-    ctx.set_fonts(fonts);
-    ctx.set_visuals_of(egui::Theme::Dark, visuals(&DARK, true));
-    ctx.set_visuals_of(egui::Theme::Light, visuals(&LIGHT, false));
-    ctx.all_styles_mut(|s| {
-        s.spacing.item_spacing = vec2(8.0, 8.0);
-        s.spacing.button_padding = vec2(12.0, 6.0);
-        s.text_styles
-            .insert(egui::TextStyle::Body, FontId::proportional(14.0));
-        s.text_styles
-            .insert(egui::TextStyle::Button, FontId::proportional(14.0));
-        s.text_styles
-            .insert(egui::TextStyle::Small, FontId::proportional(12.0));
-    });
-    apply_theme(ctx, theme);
-}
-
-fn apply_theme(ctx: &egui::Context, theme: &str) {
-    ctx.set_theme(match theme {
-        "light" => egui::ThemePreference::Light,
-        "dark" => egui::ThemePreference::Dark,
-        _ => egui::ThemePreference::System,
-    });
-}
-
-fn semi(size: f32) -> FontId {
-    FontId::new(size, FontFamily::Name("semi".into()))
-}
 
 // ---------------------------------------------------------------- widgets
 
@@ -173,9 +36,9 @@ fn semi(size: f32) -> FontId {
 fn card<R>(ui: &mut egui::Ui, p: &Pal, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     egui::Frame::new()
         .fill(p.surface)
-        .stroke(Stroke::new(1.0, p.border))
-        .corner_radius(12)
-        .inner_margin(egui::Margin::same(14))
+        .stroke(Stroke::new(size::HAIRLINE, p.border))
+        .corner_radius(radius::LG)
+        .inner_margin(egui::Margin::same(space::LG as i8))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             add(ui)
@@ -187,7 +50,7 @@ fn card<R>(ui: &mut egui::Ui, p: &Pal, add: impl FnOnce(&mut egui::Ui) -> R) -> 
 fn section(ui: &mut egui::Ui, p: &Pal, title: &str) {
     ui.label(
         RichText::new(title.to_uppercase())
-            .font(semi(11.0))
+            .font(semi(ty::CAPTION))
             .color(p.muted),
     );
 }
@@ -196,73 +59,150 @@ fn section(ui: &mut egui::Ui, p: &Pal, title: &str) {
 type Tip = (&'static str, &'static str);
 
 fn tip_ui(ui: &mut egui::Ui, tip: Tip) {
-    ui.set_max_width(260.0);
-    ui.label(RichText::new(tip.0).font(semi(13.0)));
-    ui.label(RichText::new(tip.1).size(12.5));
+    tip_ui_owned(ui, tip.0, tip.1);
 }
 
-/// Section title with a "?" that explains the whole group on hover.
+/// [`tip_ui`] for text built at run time.
+fn tip_ui_owned(ui: &mut egui::Ui, title: &str, body: &str) {
+    ui.set_max_width(size::TOOLTIP_W);
+    ui.label(RichText::new(title).font(semi(ty::BODY)));
+    ui.label(RichText::new(body).size(ty::CAPTION));
+}
+
+trait TipExt {
+    /// Explain a control: on hover, and for keyboard users while it has focus.
+    fn tip(self, tip: Tip) -> Self;
+    /// [`TipExt::tip`] with custom content.
+    ///
+    /// One tooltip at a time: the last input device decides. After a key press the focused
+    /// control shows its tip and hover tips stay hidden; once the pointer moves, hover tips
+    /// are back and the focus tip is hidden.
+    fn tip_with(self, add: impl FnOnce(&mut egui::Ui)) -> Self;
+}
+
+impl TipExt for egui::Response {
+    fn tip(self, tip: Tip) -> Self {
+        self.tip_with(|ui| tip_ui(ui, tip))
+    }
+
+    fn tip_with(self, add: impl FnOnce(&mut egui::Ui)) -> Self {
+        if !theme::keyboard_tips(&self.ctx) {
+            return self.on_hover_ui(add);
+        }
+        // Not while a popup (the microphone list) is open, and with an id of its own so it
+        // can never collide with that popup's.
+        if self.has_focus()
+            && theme::keyboard_active(&self.ctx)
+            && !egui::Popup::is_any_open(&self.ctx)
+        {
+            egui::Popup::from_response(&self)
+                .kind(egui::PopupKind::Tooltip)
+                .id(self.id.with("vidar-focus-tip"))
+                .show(add);
+        }
+        self
+    }
+}
+
+/// Section title with a "?" that explains the whole group on hover or focus.
 fn section_help(ui: &mut egui::Ui, p: &Pal, title: &str, help: Tip) {
     ui.horizontal(|ui| {
         section(ui, p, title);
-        let (r, resp) = ui.allocate_exact_size(vec2(15.0, 15.0), Sense::hover());
-        let hovered = resp.hovered();
-        let c = if hovered { p.text } else { p.muted };
+        let (r, resp) =
+            ui.allocate_exact_size(vec2(size::MIN_TARGET, size::MIN_TARGET), Sense::click());
+        let c = if resp.hovered() || resp.has_focus() {
+            p.text
+        } else {
+            p.muted
+        };
         ui.painter()
-            .circle_stroke(r.center(), 6.5, Stroke::new(1.2, c));
+            .circle_stroke(r.center(), 7.5, Stroke::new(1.25, c));
         ui.painter().text(
             r.center() + vec2(0.0, 0.5),
             Align2::CENTER_CENTER,
             "?",
-            semi(10.0),
+            semi(ty::MICRO),
             c,
         );
-        resp.on_hover_ui(|ui| tip_ui(ui, help));
+        resp.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::Role::Button, true, format!("About {title}"))
+        });
+        focus_ring(ui, p, &resp, radius::LG);
+        resp.tip(help);
     });
 }
 
-/// iOS-style switch. Returns (flipped, response) so callers can attach a tooltip.
-fn switch_resp(ui: &mut egui::Ui, p: &Pal, on: bool) -> (bool, egui::Response) {
-    let (rect, resp) = ui.allocate_exact_size(vec2(38.0, 22.0), Sense::click());
-    let t = ui.ctx().animate_bool_with_time(resp.id, on, 0.12);
-    let painter = ui.painter();
-    painter.rect_filled(
-        rect,
-        rect.height() / 2.0,
-        if on { p.accent } else { p.border },
-    );
-    let r = rect.height() / 2.0 - 3.0;
-    let x = egui::lerp(rect.left() + r + 3.0..=rect.right() - r - 3.0, t);
-    painter.circle_filled(pos2(x, rect.center().y), r, Color32::WHITE);
-    if resp.hovered() {
+fn pointer_cursor(ui: &egui::Ui, resp: &egui::Response) {
+    if resp.hovered() && ui.is_enabled() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
+}
+
+/// Switch. Returns (flipped, response) so callers can attach a tooltip.
+/// Off: outlined grey track, thumb on the left. On: green track, thumb on the right.
+fn switch_resp(ui: &mut egui::Ui, p: &Pal, on: bool, label: &str) -> (bool, egui::Response) {
+    let (rect, resp) = ui.allocate_exact_size(
+        vec2(size::SWITCH_W, size::SWITCH_H),
+        if ui.is_enabled() {
+            Sense::click()
+        } else {
+            Sense::hover()
+        },
+    );
+    let t = ui
+        .ctx()
+        .animate_bool_with_time(resp.id, on, anim(ui.ctx(), motion::BASE));
+    let down = resp.is_pointer_button_down_on();
+    let track = match (on, down, resp.hovered()) {
+        (true, true, _) => p.accent_pressed,
+        (true, false, true) => p.accent_hover,
+        (true, false, false) => p.accent,
+        (false, true, _) => p.muted,
+        (false, false, true) => p.muted,
+        (false, false, false) => p.ctrl_border,
+    };
+    let painter = ui.painter();
+    painter.rect_filled(rect, rect.height() / 2.0, track);
+    let pad = 4.0;
+    let r = rect.height() / 2.0 - pad;
+    let x = egui::lerp(rect.left() + r + pad..=rect.right() - r - pad, t);
+    painter.circle_filled(
+        pos2(x, rect.center().y),
+        if down { r + 1.0 } else { r },
+        p.surface.lerp_to_gamma(p.on_accent, t),
+    );
+    pointer_cursor(ui, &resp);
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Switch, true, on, label));
+    focus_ring(ui, p, &resp, (size::SWITCH_H / 2.0) as u8);
     (resp.clicked(), resp)
 }
 
-/// A labelled row with a switch on the right.
+/// A labelled row with a switch on the right. The label is part of the click target.
 fn switch_row(ui: &mut egui::Ui, p: &Pal, title: &str, hint: &str, on: bool, tip: Tip) -> bool {
     let mut flipped = false;
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
-            ui.set_width(ui.available_width() - 50.0);
-            ui.label(RichText::new(title).color(p.text))
-                .on_hover_ui(|ui| tip_ui(ui, tip));
+            ui.set_width(ui.available_width() - (size::SWITCH_W + space::LG));
+            let label = ui
+                .add(egui::Label::new(RichText::new(title).color(p.text)).sense(Sense::CLICK))
+                .tip(tip);
+            flipped |= label.clicked();
             if !hint.is_empty() {
-                ui.label(RichText::new(hint).small().color(p.muted));
+                ui.label(RichText::new(hint).size(ty::CAPTION).color(p.muted));
             }
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let (clicked, resp) = switch_resp(ui, p, on);
-            resp.on_hover_ui(|ui| tip_ui(ui, tip));
-            flipped = clicked;
+            let (clicked, resp) = switch_resp(ui, p, on, title);
+            resp.tip(tip);
+            flipped |= clicked;
         });
     });
     flipped
 }
 
-/// Segmented control. Returns the index clicked, if any. `tips` (one per option, or empty)
-/// appear on hover, also when the control is disabled.
+/// Segmented control (a radio group drawn as a row of buttons). Returns the index clicked,
+/// if any. `tips` (one per option, or empty) appear on hover and focus, also when the
+/// control is disabled. Selected: raised, green outline. Hover and pressed: neutral wash.
 fn segmented(
     ui: &mut egui::Ui,
     p: &Pal,
@@ -271,17 +211,23 @@ fn segmented(
     enabled: bool,
     tips: &[Tip],
 ) -> Option<usize> {
-    let h = 32.0;
+    let (h, pad) = (size::SEGMENT_H, size::SEGMENT_PAD);
     let w = ui.available_width();
     let (rect, _) = ui.allocate_exact_size(vec2(w, h), Sense::hover());
     let painter = ui.painter().clone();
-    painter.rect_filled(rect, 9.0, p.surface2);
-    let seg = (w - 6.0) / options.len() as f32;
+    painter.rect_filled(rect, radius::MD, p.surface2);
+    painter.rect_stroke(
+        rect,
+        radius::MD,
+        Stroke::new(size::HAIRLINE, p.ctrl_border),
+        StrokeKind::Inside,
+    );
+    let seg = (w - 2.0 * pad) / options.len() as f32;
     let mut clicked = None;
     for (i, label) in options.iter().enumerate() {
         let r = Rect::from_min_size(
-            pos2(rect.left() + 3.0 + seg * i as f32, rect.top() + 3.0),
-            vec2(seg, h - 6.0),
+            pos2(rect.left() + pad + seg * i as f32, rect.top() + pad),
+            vec2(seg, h - 2.0 * pad),
         );
         let resp = ui.interact(
             r,
@@ -293,50 +239,267 @@ fn segmented(
             },
         );
         let active = selected == Some(i);
+        let hot = resp.hovered() && enabled;
         if active {
-            painter.rect_filled(r, 7.0, p.surface);
-            painter.rect_stroke(r, 7.0, Stroke::new(1.0, p.border), StrokeKind::Inside);
-        } else if resp.hovered() && enabled {
-            painter.rect_filled(r, 7.0, p.border.gamma_multiply(0.5));
+            painter.rect_filled(r, radius::SM, p.surface);
+            painter.rect_stroke(
+                r,
+                radius::SM,
+                Stroke::new(size::SELECTED, p.accent),
+                StrokeKind::Inside,
+            );
+        } else if hot {
+            let wash = if resp.is_pointer_button_down_on() {
+                p.pressed
+            } else {
+                p.hover
+            };
+            painter.rect_filled(r, radius::SM, wash);
         }
-        let color = if !enabled {
-            p.muted.gamma_multiply(0.6)
-        } else if active {
-            p.text
-        } else {
-            p.muted
-        };
+        let color = if active || hot { p.text } else { p.muted };
         painter.text(
             r.center(),
             Align2::CENTER_CENTER,
             *label,
             if active {
-                semi(13.0)
+                semi(ty::BODY)
             } else {
-                FontId::proportional(13.0)
+                FontId::proportional(ty::BODY)
             },
             color,
         );
+        resp.widget_info(|| {
+            egui::WidgetInfo::selected(egui::Role::RadioButton, enabled, active, *label)
+        });
+        focus_ring(ui, p, &resp, radius::SM);
         if resp.clicked() && !active {
             clicked = Some(i);
         }
-        if resp.hovered() && enabled {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        if enabled {
+            pointer_cursor(ui, &resp);
         }
         if let Some(&tip) = tips.get(i) {
-            resp.on_hover_ui(|ui| tip_ui(ui, tip));
+            resp.tip(tip);
         }
     }
     clicked
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    /// The one main action of a card or dialog: filled green.
+    Primary,
+    /// Everything else: outlined neutral.
+    Secondary,
+    /// A destructive action offered next to others: outlined, red text.
+    Danger,
+    /// The confirm button of a destructive dialog: filled red.
+    DangerSolid,
+}
+
+/// Button with every state drawn from the palette: idle, hover, pressed, disabled (when the
+/// `ui` is disabled) and keyboard focus. `min_w` of `0.0` hugs the label.
+fn button(ui: &mut egui::Ui, p: &Pal, kind: Kind, text: &str, min_w: f32) -> egui::Response {
+    button_h(ui, p, kind, text, min_w, None)
+}
+
+/// [`button`] with an explicit height, to sit level with a taller neighbour.
+fn button_h(
+    ui: &mut egui::Ui,
+    p: &Pal,
+    kind: Kind,
+    text: &str,
+    min_w: f32,
+    height: Option<f32>,
+) -> egui::Response {
+    let enabled = ui.is_enabled();
+    let solid = matches!(kind, Kind::Primary | Kind::DangerSolid);
+    let (font, h) = if solid {
+        (semi(ty::BODY), size::BUTTON_H)
+    } else {
+        (FontId::proportional(ty::BODY), size::BUTTON_H_SM)
+    };
+    let h = height.unwrap_or(h);
+    let galley = ui
+        .painter()
+        .layout_no_wrap(text.to_owned(), font, Color32::PLACEHOLDER);
+    let w = (galley.size().x + 2.0 * space::LG).max(min_w);
+    let (rect, resp) = ui.allocate_exact_size(
+        vec2(w, h),
+        if enabled {
+            Sense::click()
+        } else {
+            Sense::hover()
+        },
+    );
+    let (hot, down) = (resp.hovered() && enabled, resp.is_pointer_button_down_on());
+    let pick = |rest: Color32, hover: Color32, pressed: Color32| {
+        if down {
+            pressed
+        } else if hot {
+            hover
+        } else {
+            rest
+        }
+    };
+    let (fill, fg, stroke) = if !enabled {
+        (p.surface2, p.muted, Stroke::new(size::HAIRLINE, p.border))
+    } else {
+        match kind {
+            Kind::Primary => (
+                pick(p.accent, p.accent_hover, p.accent_pressed),
+                p.on_accent,
+                Stroke::NONE,
+            ),
+            Kind::DangerSolid => (
+                pick(p.danger, p.danger_hover, p.danger_pressed),
+                p.on_danger,
+                Stroke::NONE,
+            ),
+            Kind::Secondary | Kind::Danger => (
+                pick(p.surface2, p.hover, p.pressed),
+                if kind == Kind::Danger {
+                    p.danger
+                } else {
+                    p.text
+                },
+                Stroke::new(
+                    size::HAIRLINE,
+                    if hot || down { p.muted } else { p.ctrl_border },
+                ),
+            ),
+        }
+    };
+    let painter = ui.painter();
+    painter.rect_filled(rect, radius::MD, fill);
+    if stroke != Stroke::NONE {
+        painter.rect_stroke(rect, radius::MD, stroke, StrokeKind::Inside);
+    }
+    painter.galley(rect.center() - galley.size() / 2.0, galley, fg);
+    pointer_cursor(ui, &resp);
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, text));
+    focus_ring(ui, p, &resp, radius::MD);
+    resp
+}
+
+/// Primary (filled) button.
+fn primary(ui: &mut egui::Ui, p: &Pal, text: &str, width: f32) -> bool {
+    button(ui, p, Kind::Primary, text, width).clicked()
+}
+
 /// Primary button with a tooltip.
 fn primary_tip(ui: &mut egui::Ui, p: &Pal, text: &str, width: f32, tip: Tip) -> bool {
-    let b = egui::Button::new(RichText::new(text).font(semi(14.0)).color(p.on_accent))
-        .fill(p.accent)
-        .corner_radius(9)
-        .min_size(vec2(width, 36.0));
-    ui.add(b).on_hover_ui(|ui| tip_ui(ui, tip)).clicked()
+    button(ui, p, Kind::Primary, text, width).tip(tip).clicked()
+}
+
+/// Secondary (outlined) button.
+fn secondary(ui: &mut egui::Ui, p: &Pal, text: &str) -> egui::Response {
+    button(ui, p, Kind::Secondary, text, 0.0)
+}
+
+/// A standalone text link with a 24 px high target, underlined on hover and focus.
+fn link(ui: &mut egui::Ui, p: &Pal, text: &str) -> egui::Response {
+    let galley = ui.painter().layout_no_wrap(
+        text.to_owned(),
+        FontId::proportional(ty::CAPTION),
+        Color32::PLACEHOLDER,
+    );
+    let (rect, resp) = ui.allocate_exact_size(
+        vec2(galley.size().x, size::MIN_TARGET.max(galley.size().y)),
+        Sense::click(),
+    );
+    let color = if resp.is_pointer_button_down_on() {
+        p.text
+    } else {
+        p.blue
+    };
+    let at = rect.center() - galley.size() / 2.0;
+    if resp.hovered() || resp.has_focus() {
+        let y = at.y + galley.size().y;
+        ui.painter()
+            .hline(at.x..=at.x + galley.size().x, y, Stroke::new(1.0, color));
+    }
+    ui.painter().galley(at, galley, color);
+    pointer_cursor(ui, &resp);
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Link, true, text));
+    focus_ring(ui, p, &resp, radius::SM);
+    resp
+}
+
+/// A tinted notice: a status icon, then the content. The text stays in the normal text
+/// colours (they have the contrast); the tint and the icon carry the tone.
+fn banner<R>(ui: &mut egui::Ui, p: &Pal, tone: Tone, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let c = tone_color(p, tone);
+    egui::Frame::new()
+        .fill(c.gamma_multiply(alpha::TINT))
+        .stroke(Stroke::new(size::HAIRLINE, c.gamma_multiply(0.45)))
+        .corner_radius(radius::MD)
+        .inner_margin(egui::Margin::same(space::SM as i8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = space::SM;
+                tone_icon(ui, p, tone);
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = space::XS;
+                    add(ui)
+                })
+                .inner
+            })
+            .inner
+        })
+        .inner
+}
+
+/// A status icon whose shape, not only its colour, says what it means: ring (idle), arc
+/// (busy), tick (good), triangle (warning), cross (problem).
+fn tone_icon(ui: &mut egui::Ui, p: &Pal, tone: Tone) {
+    let (r, _) = ui.allocate_exact_size(vec2(16.0, 20.0), Sense::hover());
+    let c = r.center();
+    let color = tone_color(p, tone);
+    let painter = ui.painter();
+    let mark = |pts: Vec<egui::Pos2>, col: Color32| {
+        painter.add(egui::Shape::line(pts, Stroke::new(1.75, col)));
+    };
+    match tone {
+        Tone::Idle => {
+            painter.circle_stroke(c, 5.5, Stroke::new(1.75, color));
+        }
+        Tone::Busy => {
+            let pts = (0..=18)
+                .map(|k| {
+                    let a = k as f32 / 18.0 * std::f32::consts::PI * 1.5;
+                    c + vec2(a.cos(), a.sin()) * 6.0
+                })
+                .collect();
+            mark(pts, color);
+        }
+        Tone::Good => {
+            painter.circle_filled(c, 7.0, color);
+            mark(
+                vec![
+                    c + vec2(-3.2, 0.2),
+                    c + vec2(-1.0, 2.6),
+                    c + vec2(3.4, -2.6),
+                ],
+                p.on_accent,
+            );
+        }
+        Tone::Warn => {
+            painter.add(egui::Shape::convex_polygon(
+                vec![c + vec2(0.0, -7.0), c + vec2(7.5, 6.0), c + vec2(-7.5, 6.0)],
+                color,
+                Stroke::NONE,
+            ));
+            mark(vec![c + vec2(0.0, -2.5), c + vec2(0.0, 1.5)], p.surface);
+            painter.circle_filled(c + vec2(0.0, 4.0), 1.0, p.surface);
+        }
+        Tone::Bad => {
+            painter.circle_filled(c, 7.0, color);
+            mark(vec![c + vec2(-2.8, -2.8), c + vec2(2.8, 2.8)], p.on_danger);
+            mark(vec![c + vec2(-2.8, 2.8), c + vec2(2.8, -2.8)], p.on_danger);
+        }
+    }
 }
 
 // ---------------------------------------------------------------- explanations
@@ -371,7 +534,7 @@ const TIP_LOGS: Tip = (
     "Opens the folder with Vidar's log files. Attach the newest one when reporting a problem.",
 );
 const TIP_RECORD: Tip = ("Start recording", "Records your microphone until you press Stop, up to 20 seconds. Talk normally with your usual background noise. The recording stays in memory and is never saved to disk.");
-const TIP_WAVE: Tip = ("Waveform", "Blue: your original recording. Green: the version you are hearing. The less green between your words, the more noise was removed. Click to jump there, drag to loop a part, double-click to clear the loop.");
+const TIP_WAVE: Tip = ("Waveform", "Blue: your original recording. Green: the version you are hearing. The less green between your words, the more noise was removed. Click to jump there, drag to loop a part, double-click to clear the loop. With the keyboard, Tab to the waveform, then Left and Right move the playhead.");
 
 const STRENGTH_HELP: Tip = (
     "Strength",
@@ -409,7 +572,7 @@ const BOOST_TIPS: [Tip; 4] = [
         "Much louder. For very quiet microphones; loud speech may distort.",
     ),
 ];
-const TONE_HELP: Tip = ("Voice tone", "Shapes how your voice sounds to others, after the noise is removed. Pick a tone, or drag the points on the curve to make your own. Double-click a point to reset it.");
+const TONE_HELP: Tip = ("Voice tone", "Shapes how your voice sounds to others, after the noise is removed. Pick a tone, or drag the points on the curve to make your own. Double-click a point to reset it. With the keyboard, Tab to a point, then Up and Down change it and Delete resets it.");
 /// Voice tone choices, shown in rows of [`TONE_ROW`]: the presets, then "Custom".
 /// Rows: general tones, fixes for one problem, then tones for a kind of microphone.
 const TONE_PRESETS: [(&str, &str); 12] = [
@@ -574,90 +737,109 @@ fn cpu_count() -> usize {
 /// A small pill sized to its text. Drawn by hand: a `Frame` stretches to the full width in a
 /// centred layout.
 fn badge(ui: &mut egui::Ui, bg: Color32, fg: Color32, text: &str) -> egui::Response {
-    let galley = ui.painter().layout_no_wrap(text.to_owned(), semi(10.5), fg);
-    let pad = vec2(6.0, 1.0);
+    let galley = ui
+        .painter()
+        .layout_no_wrap(text.to_owned(), semi(ty::MICRO), fg);
+    let pad = vec2(space::SM - 2.0, 2.0);
     let (rect, resp) = ui.allocate_exact_size(galley.size() + 2.0 * pad, Sense::hover());
     if ui.is_rect_visible(rect) {
-        ui.painter().rect_filled(rect, 6, bg);
+        ui.painter().rect_filled(rect, radius::SM, bg);
         ui.painter().galley(rect.min + pad, galley, fg);
     }
     resp
 }
 
-/// The big round power button: the Vidar logo inside a circle of short bars. Off, the bars
-/// are small grey ticks; on, they take the logo's colours and each one rises and falls with
-/// your voice on its own. Returns true when clicked.
+/// The big round power button: the Vidar logo on a round face. Round the inside of the edge
+/// runs a ring of 96 thin digital bars (see [`VoiceRing`]) that grow inward toward the logo.
+/// Off, the bars are single grey ticks; on, they take the logo's colours and each one spikes
+/// with your voice on its own. Returns true when clicked.
 fn power_button(
     ui: &mut egui::Ui,
     p: &Pal,
     state: RunState,
-    voice: f32,
     bands: &[f32; vidar_dsp::BANDS],
-    ring: &[f32; RING_BARS],
+    ring: &VoiceRing,
     motion: RingMotion,
 ) -> bool {
-    let d = 168.0;
-    // Extra height so the voice ring and its pulses have room to grow outward.
-    let (rect, area) = ui.allocate_exact_size(vec2(ui.available_width(), d + 86.0), Sense::hover());
-    let c = rect.center();
+    /// Radius of the button face.
+    const FACE: f32 = 92.0;
+    /// Room outside the face for the edge ring, the spinner and the focus ring.
+    const MARGIN: f32 = 10.0;
+    // Margin and face above the centre; below it the face, then the label.
+    let (rect, area) = ui.allocate_exact_size(
+        vec2(ui.available_width(), 2.0 * FACE + MARGIN + 32.0),
+        Sense::hover(),
+    );
+    let c = pos2(rect.center().x, rect.top() + FACE + MARGIN);
     let resp = ui.interact(
-        Rect::from_center_size(c, vec2(d, d)),
+        Rect::from_center_size(c, vec2(2.0 * FACE, 2.0 * FACE)),
         area.id.with("power"),
         Sense::click(),
     );
-    let active = state == RunState::Running;
+    // Stopping keeps the "on" look until it has stopped.
+    let lit = matches!(state, RunState::Running | RunState::Stopping);
     let busy = matches!(state, RunState::Starting | RunState::Stopping);
-    let t = ui.ctx().animate_bool_with_time(resp.id, active, 0.4);
+    let t = ui
+        .ctx()
+        .animate_bool_with_time(resp.id, lit, anim(ui.ctx(), motion::SLOW));
     let time = ui.input(|i| i.time) as f32;
+    let dark = ui.visuals().dark_mode;
     let painter = ui.painter();
 
-    // The circle of bars.
-    let dark = ui.visuals().dark_mode;
-    draw_voice_ring(
-        painter,
-        p,
-        c,
-        d / 2.0 - 5.0,
-        t,
-        voice,
-        ring,
-        time,
-        motion,
-        dark,
-    );
+    // The face: idle, hover and pressed washes; the ring carries the on/off colour.
+    let face = if busy {
+        p.surface
+    } else if resp.is_pointer_button_down_on() {
+        p.pressed
+    } else if resp.hovered() {
+        p.surface2
+    } else {
+        p.surface
+    };
+    painter.circle_filled(c, FACE, face);
+    draw_voice_ring(painter, p, c, FACE, t, dark, ring, motion);
+
+    // Starting turns clockwise, stopping counter-clockwise; a still arc when animations are off.
+    let mut outer = FACE + 4.0;
     if busy {
-        let pts: Vec<_> = (0..=24)
+        let dir = if state == RunState::Starting {
+            1.0
+        } else {
+            -1.0
+        };
+        let (a0, sweep) = if motion.calm {
+            (-FRAC_PI_2, PI * 1.5)
+        } else {
+            (time * 4.0 * dir, PI * 1.5 * 0.6)
+        };
+        let r = FACE + 8.0;
+        let pts: Vec<_> = (0..=32)
             .map(|k| {
-                let a = time * 4.0 + k as f32 / 24.0 * std::f32::consts::PI * 0.9;
-                c + vec2(a.cos(), a.sin()) * (d / 2.0 - 4.0)
+                let a = a0 + k as f32 / 32.0 * sweep;
+                c + vec2(a.cos(), a.sin()) * r
             })
             .collect();
-        painter.add(egui::Shape::line(pts, Stroke::new(6.0, p.blue)));
-        ui.ctx().request_repaint();
+        painter.add(egui::Shape::line(pts, Stroke::new(5.0, p.blue)));
+        outer = r + 2.5;
+        if !motion.calm {
+            ui.ctx().request_repaint();
+        }
     }
-    painter.circle_filled(
-        c,
-        d / 2.0 - 10.0,
-        if resp.hovered() && !busy {
-            p.surface2
-        } else {
-            p.surface
-        },
-    );
-    painter.circle_stroke(c, d / 2.0 - 10.0, Stroke::new(1.0, p.border));
+    focus_ring_circle(ui, p, &resp, c, outer);
 
     // The Vidar logo in place of a power glyph.
+    let painter = ui.painter();
     draw_logo(
         painter,
         p,
-        c - vec2(0.0, 8.0),
-        48.0,
+        c,
+        52.0,
         t,
         bands,
-        busy.then_some(time),
+        (busy && !motion.calm).then_some(time),
         time,
     );
-    let icon = if active { p.accent } else { p.muted };
+    let label_color = if t > 0.5 && !busy { p.accent } else { p.muted };
     let label = match state {
         RunState::Running => "ON",
         RunState::Stopped => "OFF",
@@ -665,25 +847,23 @@ fn power_button(
         RunState::Stopping => "STOPPING",
     };
     painter.text(
-        c + vec2(0.0, 40.0),
+        c + vec2(0.0, FACE + 24.0),
         Align2::CENTER_CENTER,
         label,
-        semi(12.0),
-        icon,
+        semi(ty::CAPTION),
+        label_color,
     );
     if resp.hovered() && !busy {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
     let clicked = resp.clicked();
-    resp.on_hover_ui(|ui| {
-        tip_ui(
-            ui,
-            match state {
-                RunState::Running => ("Turn noise cancellation off", "Stops Vidar and makes your own microphone the Windows default again. While Vidar is on, the logo and the ring show your cleaned voice live: low tones in the middle of the logo and at the top of the ring, high ones at the edges and the bottom."),
-                RunState::Stopped => ("Turn noise cancellation on", "Vidar listens to your microphone, removes the noise and sends your clean voice to Vidar AI Microphone, which apps then use."),
-                _ => ("Please wait", "Vidar is switching your microphone."),
-            },
-        )
+    resp.widget_info(|| {
+        egui::WidgetInfo::selected(egui::Role::Switch, !busy, lit, "Noise cancellation")
+    });
+    resp.tip(match state {
+        RunState::Running => ("Turn noise cancellation off", "Stops Vidar and makes your own microphone the Windows default again. While Vidar is on, the logo and the ring show your cleaned voice live: low tones in the middle of the logo and at the top of the ring, high ones at the edges and the bottom."),
+        RunState::Stopped => ("Turn noise cancellation on", "Vidar listens to your microphone, removes the noise and sends your clean voice to Vidar AI Microphone, which apps then use."),
+        _ => ("Please wait", "Vidar is switching your microphone."),
     });
     clicked && state != RunState::Stopping
 }
@@ -717,11 +897,10 @@ fn play_indicator(
     }
 }
 
-/// [`tip_ui`] for text built at run time.
-fn tip_ui_owned(ui: &mut egui::Ui, title: &str, body: &str) {
-    ui.set_max_width(260.0);
-    ui.label(RichText::new(title).font(semi(13.0)));
-    ui.label(RichText::new(body).size(12.5));
+/// Id of tone graph point `i`. Fixed (not tied to a parent ui) so `test_keys` can tell whether
+/// a point has keyboard focus without waiting for the graph to be drawn.
+fn tone_point_id(i: usize) -> egui::Id {
+    egui::Id::unique(("vidar-tone-point", i))
 }
 
 /// The voice tone graph: the equaliser's response from 50 Hz to 16 kHz (±12 dB), with one
@@ -754,8 +933,7 @@ fn tone_curve(
     // Inner plot: keep the end points and their value bubbles off the frame's edges.
     let plot = frame.shrink2(vec2(18.0, 12.0));
     let painter = ui.painter_at(outer);
-    let dim = |c: Color32| if active { c } else { c.gamma_multiply(0.55) };
-    painter.rect_filled(frame, 10.0, p.surface2);
+    painter.rect_filled(frame, radius::MD, p.surface2);
 
     let x_of =
         |f: f64| plot.left() + ((f / F_MIN).ln() / (F_MAX / F_MIN).ln()) as f32 * plot.width();
@@ -767,8 +945,7 @@ fn tone_curve(
 
     // Which band the pointer is over (or dragging), found before drawing so the column can
     // be highlighted under the curve.
-    let ids: [egui::Id; vidar_dsp::EQ_BANDS] =
-        std::array::from_fn(|i| ui.scope_id().with(("tone", i)));
+    let ids: [egui::Id; vidar_dsp::EQ_BANDS] = std::array::from_fn(tone_point_id);
     let xs: [f32; vidar_dsp::EQ_BANDS] = std::array::from_fn(|i| x_of(vidar_dsp::EQ_POINTS_HZ[i]));
     // Hit columns split the plot halfway between neighbouring points, so every spot on the
     // graph belongs to one band and the narrow high-frequency gaps are still easy to grab.
@@ -787,6 +964,18 @@ fn tone_curve(
     });
     let resps: [egui::Response; vidar_dsp::EQ_BANDS] =
         std::array::from_fn(|i| ui.interact(cols[i], ids[i], Sense::click_and_drag()));
+    let any_focus = resps.iter().any(|r| r.has_focus());
+    // The gains as last sent, until the engine's view has caught up with them: key repeats
+    // can come faster than that, and each step must start from the latest value.
+    let now = ui.input(|i| i.time);
+    let pending_id = egui::Id::unique("vidar-tone-pending");
+    let unsaved_id = egui::Id::unique("vidar-tone-unsaved");
+    let pending: Option<([f64; vidar_dsp::EQ_BANDS], f64)> = ui.data(|d| d.get_temp(pending_id));
+    let mut unsaved = ui.data(|d| d.get_temp::<bool>(unsaved_id)).unwrap_or(false);
+    let mut cur = match pending {
+        Some((g, at)) if g != gains && now - at < 1.0 => g,
+        _ => gains,
+    };
     let hot: Option<usize> = resps
         .iter()
         .position(|r| r.dragged())
@@ -797,7 +986,7 @@ fn tone_curve(
             pos2(xs[h], frame.center().y),
             vec2(34.0, frame.height() - 8.0),
         );
-        painter.rect_filled(band, 8.0, p.accent.gamma_multiply(0.07));
+        painter.rect_filled(band, radius::MD, p.accent.gamma_multiply(0.07));
     }
 
     // Grid: a line every 3 dB (labelled every 6) and the usual log-frequency lines
@@ -827,8 +1016,8 @@ fn tone_curve(
                 } else {
                     format!("{db:+.0}")
                 },
-                FontId::proportional(10.0),
-                p.muted.gamma_multiply(if k == 0 { 1.0 } else { 0.75 }),
+                FontId::proportional(ty::MICRO),
+                p.muted,
             );
         }
     }
@@ -853,8 +1042,8 @@ fn tone_curve(
                     } else {
                         format!("{f}")
                     },
-                    FontId::proportional(9.5),
-                    p.muted.gamma_multiply(0.7),
+                    FontId::proportional(ty::MICRO),
+                    p.muted,
                 );
             }
         }
@@ -908,7 +1097,72 @@ fn tone_curve(
     let mut out = None;
     for (i, resp) in resps.into_iter().enumerate() {
         let x = xs[i];
-        let is_hot = hot == Some(i);
+        let focused = resp.has_focus() && theme::keyboard_active(ui.ctx());
+        let is_hot = hot == Some(i) || focused;
+        if resp.has_focus() {
+            // Keyboard: Up and Down move the focused point in 0.5 dB steps, Delete resets it.
+            // The tone graph owns the vertical arrows while a point has focus.
+            ui.memory_mut(|m| {
+                m.set_focus_lock_filter(
+                    resp.id,
+                    egui::EventFilter {
+                        vertical_arrows: true,
+                        ..Default::default()
+                    },
+                )
+            });
+            let (steps, reset, released) = ui.input_mut(|inp| {
+                let (mut steps, mut reset, mut released) = (0_i32, false, false);
+                for ev in &inp.events {
+                    if let egui::Event::Key {
+                        key,
+                        pressed,
+                        modifiers,
+                        ..
+                    } = ev
+                    {
+                        match (key, pressed) {
+                            (egui::Key::ArrowUp, true) if modifiers.is_none() => steps += 1,
+                            (egui::Key::ArrowDown, true) if modifiers.is_none() => steps -= 1,
+                            (egui::Key::Delete | egui::Key::Backspace, true) => reset = true,
+                            (
+                                egui::Key::ArrowUp
+                                | egui::Key::ArrowDown
+                                | egui::Key::Delete
+                                | egui::Key::Backspace,
+                                false,
+                            ) => released = true,
+                            _ => {}
+                        }
+                    }
+                }
+                for k in [
+                    egui::Key::ArrowUp,
+                    egui::Key::ArrowDown,
+                    egui::Key::Delete,
+                    egui::Key::Backspace,
+                ] {
+                    inp.consume_key(egui::Modifiers::NONE, k);
+                }
+                (steps, reset, released)
+            });
+            let after = if reset {
+                0.0
+            } else {
+                (cur[i] + 0.5 * f64::from(steps)).clamp(-max_db, max_db)
+            };
+            // Only a real change is sent: while a key repeats, without saving each step;
+            // the value is saved once when the key is released.
+            if after != cur[i] {
+                cur[i] = after;
+                out = Some((cur, false));
+                unsaved = true;
+            }
+            if (released || reset) && unsaved {
+                out = Some((cur, true));
+                unsaved = false;
+            }
+        }
         if resp.hovered() || resp.dragged() {
             ui.ctx().set_cursor_icon(if resp.dragged() {
                 egui::CursorIcon::ResizeVertical
@@ -918,28 +1172,29 @@ fn tone_curve(
         }
         if resp.dragged() {
             if let Some(pos) = resp.interact_pointer_pos() {
-                let mut g = gains;
-                g[i] = (db_of(pos.y) * 2.0).round() / 2.0;
-                if g != gains {
-                    out = Some((g, false));
+                let val = (db_of(pos.y) * 2.0).round() / 2.0;
+                if val != cur[i] {
+                    cur[i] = val;
+                    out = Some((cur, false));
                 }
             }
         }
         if resp.drag_stopped() {
-            out = Some((out.map_or(gains, |(g, _)| g), true));
+            out = Some((cur, true));
         }
         if resp.double_clicked() {
-            let mut g = gains;
-            g[i] = 0.0;
-            out = Some((g, true));
+            cur[i] = 0.0;
+            out = Some((cur, true));
         }
 
-        let g = out.map_or(gains[i], |(g, _): ([f64; vidar_dsp::EQ_BANDS], bool)| g[i]);
+        let g = cur[i];
         let c = pos2(x, y_of(g));
         let r = if is_hot { 7.5 } else { 6.0 };
         let fill = if active { p.accent } else { p.muted };
         painter.circle_filled(c, r + 2.5, p.surface2);
         painter.circle_filled(c, r, fill);
+        // The point's own halo sits at r + 2, so the ring lands at r + 5.
+        focus_ring_circle(ui, p, &resp, c, r + 2.0);
         painter.circle_filled(
             c,
             r * 0.38,
@@ -949,7 +1204,7 @@ fn tone_curve(
             painter.circle_stroke(c, r + 4.0, Stroke::new(1.5, p.accent.gamma_multiply(0.45)));
             // Value bubble on the side of the point with more room.
             let text = db_text(g);
-            let galley = painter.layout_no_wrap(text, semi(11.0), p.on_accent);
+            let galley = painter.layout_no_wrap(text, semi(ty::MICRO), p.on_accent);
             let size = galley.size() + vec2(12.0, 4.0);
             let dy = if c.y > plot.center().y {
                 -(r + 8.0 + size.y / 2.0)
@@ -962,41 +1217,48 @@ fn tone_curve(
                     + (frame.right() - 2.0 - bubble.right()).min(0.0),
                 0.0,
             ));
-            painter.rect_filled(bubble, 6.0, if active { p.accent } else { p.muted });
+            painter.rect_filled(bubble, radius::SM, if active { p.accent } else { p.muted });
             painter.galley(bubble.center() - galley.size() / 2.0, galley, p.on_accent);
         }
 
         // Under the plot: where the band is, and its current gain (the points sit close
         // together, so the band's name is in its tooltip).
         let (label, name, what) = TONE_BANDS[i];
-        let name_color = if is_hot {
-            p.text
-        } else {
-            dim(p.text.gamma_multiply(0.85))
-        };
+        // Only the curve is dimmed while the tone is off; the text stays at full contrast.
         painter.text(
             pos2(x, frame.bottom() + 11.0),
             Align2::CENTER_CENTER,
             label,
-            semi(11.0),
-            name_color,
+            semi(ty::MICRO),
+            p.text,
         );
-        let value_color = if g == 0.0 {
-            dim(p.muted)
+        let value_color = if g == 0.0 || !active {
+            p.muted
         } else {
-            dim(p.accent)
+            p.accent
         };
         painter.text(
             pos2(x, frame.bottom() + 26.0),
             Align2::CENTER_CENTER,
             db_short(g),
-            FontId::proportional(10.0),
+            FontId::proportional(ty::MICRO),
             value_color,
         );
-        if resp.hovered() && !resp.dragged() {
-            resp.on_hover_ui(|ui| tip_ui(ui, (name, what)));
+        if !resp.dragged() {
+            resp.tip((name, what));
         }
     }
+    // Focus left the graph in the middle of a key edit: save it now.
+    if unsaved && !any_focus && out.is_none() {
+        out = Some((cur, true));
+        unsaved = false;
+    }
+    ui.data_mut(|d| {
+        if let Some((g, _)) = out {
+            d.insert_temp(pending_id, (g, now));
+        }
+        d.insert_temp(unsaved_id, unsaved);
+    });
     out
 }
 
@@ -1020,26 +1282,6 @@ fn db_text(db: f64) -> String {
     } else {
         format!("{db:+.1} dB")
     }
-}
-
-/// Primary (filled) button.
-fn primary(ui: &mut egui::Ui, p: &Pal, text: &str, width: f32) -> bool {
-    let b = egui::Button::new(RichText::new(text).font(semi(14.0)).color(p.on_accent))
-        .fill(p.accent)
-        .corner_radius(9)
-        .min_size(vec2(width, 36.0));
-    ui.add(b).clicked()
-}
-
-/// Secondary (outlined) button.
-fn secondary(ui: &mut egui::Ui, p: &Pal, text: &str) -> egui::Response {
-    ui.add(
-        egui::Button::new(RichText::new(text).color(p.text))
-            .fill(p.surface2)
-            .stroke(Stroke::new(1.0, p.border))
-            .corner_radius(9)
-            .min_size(vec2(0.0, 32.0)),
-    )
 }
 
 /// Mirrored peak envelope.
@@ -1119,46 +1361,77 @@ fn draw_logo(
     }
 }
 
-/// Bars in the voice ring around the power button.
-const RING_BARS: usize = 72;
+/// Bars in the voice ring inside the power button.
+const RING_BARS: usize = 96;
+/// Most LED segments a bar can light.
+const RING_SEGMENTS: usize = 9;
 
-/// A fixed pseudo-random number in 0..1 for bar `k`, slot `i` (stable from frame to frame).
-fn bar_rand(k: usize, i: u32) -> f32 {
-    let mut x = (k as u32).wrapping_mul(0x9E37_79B1) ^ i.wrapping_mul(0x85EB_CA77);
-    x ^= x >> 15;
-    x = x.wrapping_mul(0x2C1B_3C6D);
-    x ^= x >> 12;
-    (x & 0xFFFF) as f32 / 65_535.0
+/// The digital level ring: every bar samples its own frequency band, picks a random spike
+/// about 30 times a second, jumps to it almost at once and falls back more slowly, with a
+/// peak marker that hangs and then drops. There is no smoothing between neighbours, so it
+/// reads like an LED level meter rather than a wave.
+struct VoiceRing {
+    /// xorshift32 state; the spikes only need to look random.
+    rng: u32,
+    /// Seconds since the spikes were last re-rolled.
+    clock: f32,
+    target: [f32; RING_BARS],
+    level: [f32; RING_BARS],
+    hold: [f32; RING_BARS],
+    /// Average level of all bars, smoothed: how loud the voice is right now (0..1).
+    loud: f32,
 }
 
-/// How long bar `k` wants to be (0..1) for the current voice bands.
-///
-/// Every bar listens to its own mix of two bands and has its own sensitivity, which drifts
-/// slowly over time, so neighbours react differently to the same sound. The result is
-/// compressed (it rises quickly and never quite reaches 1), so loud speech keeps the ring
-/// lively instead of pinning every bar at full length.
-fn ring_target(k: usize, bands: &[f32; vidar_dsp::BANDS], time: f32) -> f32 {
-    let n = vidar_dsp::BANDS;
-    // Lower bands carry most of the voice; favour them so most bars move when you talk.
-    let b1 = ((bar_rand(k, 1).powf(1.6)) * n as f32) as usize % n;
-    let b2 = ((bar_rand(k, 2)) * n as f32) as usize % n;
-    let mix = 0.65 * bands[b1] + 0.35 * bands[b2];
-    let (w1, w2) = (0.6 + 1.6 * bar_rand(k, 3), 0.3 + 0.9 * bar_rand(k, 4));
-    let (p1, p2) = (bar_rand(k, 5) * 6.3, bar_rand(k, 6) * 6.3);
-    let sensitivity = 0.55 + 0.45 * (time * w1 + p1).sin() * (time * w2 + p2).sin().abs();
-    // About one bar in four is extra sensitive, so peaks stand out above their neighbours.
-    let peak = if bar_rand(k, 7) > 0.75 {
-        1.8
-    } else {
-        0.8 + 0.5 * bar_rand(k, 10)
-    };
-    1.0 - (-2.6 * mix * sensitivity * peak).exp()
-}
+impl VoiceRing {
+    fn new() -> Self {
+        Self {
+            rng: 0x9E37_79B9,
+            clock: 0.0,
+            target: [0.0; RING_BARS],
+            level: [0.0; RING_BARS],
+            hold: [0.0; RING_BARS],
+            loud: 0.0,
+        }
+    }
 
-/// Rise and fall times for bar `k`: every bar has its own, so they jump and settle at
-/// different speeds.
-fn ring_speed(k: usize) -> (f32, f32) {
-    (0.02 + 0.05 * bar_rand(k, 8), 0.10 + 0.25 * bar_rand(k, 9))
+    /// A random number in 0..1.
+    fn rand(&mut self) -> f32 {
+        let mut x = self.rng;
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        self.rng = x;
+        (x >> 8) as f32 / 16_777_216.0
+    }
+
+    /// The voice band bar `k` listens to: low at the top of the ring, high at the bottom,
+    /// mirrored left and right.
+    fn band_of(k: usize) -> usize {
+        let frac = ((k as f32 / RING_BARS as f32 + 0.5).fract() - 0.5).abs() * 2.0;
+        ((frac * (vidar_dsp::BANDS - 1) as f32).round() as usize).min(vidar_dsp::BANDS - 1)
+    }
+
+    fn update(&mut self, dt: f32, bands: &[f32; vidar_dsp::BANDS]) {
+        self.clock += dt;
+        if self.clock > 1.0 / 30.0 {
+            self.clock = 0.0;
+            for k in 0..RING_BARS {
+                let spike = self.rand().powf(2.2);
+                self.target[k] = (bands[Self::band_of(k)] * (0.25 + 1.6 * spike) * 1.25).min(1.0);
+            }
+        }
+        for k in 0..RING_BARS {
+            let tau = if self.target[k] > self.level[k] {
+                0.012
+            } else {
+                0.09
+            };
+            self.level[k] += (self.target[k] - self.level[k]) * (1.0 - (-dt / tau).exp());
+            self.hold[k] = (self.hold[k] - dt * 0.7).max(self.level[k]);
+        }
+        let mean = self.level.iter().sum::<f32>() / RING_BARS as f32;
+        self.loud += (mean - self.loud) * (1.0 - (-dt / 0.12).exp());
+    }
 }
 
 /// Colour of the ring at angle `a`, as a position on the logo's gradient (-0.7..0.7).
@@ -1174,138 +1447,122 @@ fn ring_hue(a: f32, flow: f32) -> f32 {
     (0.8 * h).clamp(-0.7, 0.7)
 }
 
-/// What moves the ring as a whole: how far the colours have flowed, the pulse clock, and the
-/// average bar length.
+/// What moves the ring as a whole.
 #[derive(Clone, Copy)]
 struct RingMotion {
+    /// How far the colours have flowed.
     flow: f32,
+    /// Clock of the edge's breathing, in turns.
     pulse: f32,
-    loudness: f32,
+    /// Windows animation effects are off: no colour flow and no breathing edge. The bars and
+    /// their peak markers still follow your voice, which is information rather than decoration.
+    calm: bool,
 }
 
-/// The circle of bars around the power button.
+/// The face's edge and the ring of digital bars just inside it.
 ///
-/// - Bars are wedges that fill their whole slice of the circle, so there are no gaps; they are
-///   one mesh, so neighbours meet without seams.
-/// - Colour is set at every wedge corner from its angle (`ring_hue`), so the gradient runs
-///   smoothly across and between bars; each bar also brightens from its foot to its tip.
-/// - Each bar's length is lightly blended with its neighbours, so the edge moves in smooth
-///   waves while every bar still has its own motion.
-/// - Pulsar: soft gradient rings keep rippling outwards and fading, quicker and brighter
-///   while you talk.
+/// - Edge: a ring stroked in the flowing ring colours; its width (1.5 to 4 px) and, in the
+///   dark theme, its brightness breathe with how loud you are.
+/// - Bars: thin, stepped like an LED meter (up to nine segments of 3.2 px), starting just
+///   inside the edge and growing toward the logo, brighter towards the tip, each with a
+///   peak-hold marker. One mesh for everything.
+/// - Light theme: solid, darkened neon (and a solid grey when idle) so every mark keeps 3:1
+///   against the white face. Dark theme: the neon as it is, fading in toward the tip.
 ///
-/// `on` fades from a quiet grey ring to the coloured, moving one.
+/// `on` (0..1) fades from a quiet grey ring (one dim segment per bar) to the coloured one.
 #[allow(clippy::too_many_arguments)]
 fn draw_voice_ring(
     painter: &egui::Painter,
     p: &Pal,
     c: egui::Pos2,
-    r: f32,
+    face: f32,
     on: f32,
-    voice: f32,
-    ring: &[f32; RING_BARS],
-    time: f32,
-    motion: RingMotion,
     dark: bool,
+    ring: &VoiceRing,
+    motion: RingMotion,
 ) {
     use egui::epaint::Mesh;
-    use std::f32::consts::{PI, TAU};
-    const REST: f32 = 4.0; // length of a quiet bar, px
-    const GROW: f32 = 24.0; // extra length at full voice, px
-    const PULSES: usize = 3;
-    const PULSE_TRAVEL: f32 = 26.0; // how far a pulse ripples out, px
-    const SEGMENTS: usize = 120; // smoothness of the pulse rings
-    let n = RING_BARS;
-    let slot = TAU / n as f32;
+    const SEG: f32 = 3.2; // length of one lit segment, px
+    const GAP: f32 = 1.4; // dark gap between segments, px
+    const EDGE_STEPS: usize = 120; // smoothness of the edge ring
     let dir = |a: f32| vec2(a.cos(), a.sin());
-    let grey = p.track_idle.gamma_multiply(0.7);
-    let colour = |a: f32, strength: f32| -> Color32 {
-        let [cr, cg, cb] = vidar_brand::neon(ring_hue(a, motion.flow));
-        let neon = Color32::from_rgb(cr as u8, cg as u8, cb as u8);
-        grey.lerp_to_gamma(neon, on)
-            .gamma_multiply(strength.clamp(0.0, 1.0))
+    let neon = |a: f32| {
+        let n = theme::neon(ring_hue(a, motion.flow));
+        if dark {
+            n
+        } else {
+            theme::neon_on_light(n)
+        }
     };
-    let clear = |a: f32| colour(a, 0.0);
 
-    // Pulses first, so the bars sit on top of them.
-    if on > 0.0 {
-        let loud = motion.loudness.min(1.0);
-        for i in 0..PULSES {
-            let phase = (motion.pulse + i as f32 / PULSES as f32).fract();
-            let fade = (1.0 - phase).powi(2) * (phase * 8.0).min(1.0);
-            let alpha = fade * on * (0.12 + 0.45 * loud);
-            let radius = r + REST + 4.0 + phase * PULSE_TRAVEL;
-            let half_w = 1.5 + 4.0 * (1.0 - phase);
-            let mut mesh = Mesh::default();
-            for k in 0..=SEGMENTS {
-                let a = -PI / 2.0 + k as f32 / SEGMENTS as f32 * TAU;
-                let base = mesh.vertices.len() as u32;
-                mesh.colored_vertex(c + dir(a) * (radius - half_w), clear(a));
-                mesh.colored_vertex(c + dir(a) * radius, colour(a, alpha));
-                mesh.colored_vertex(c + dir(a) * (radius + half_w), clear(a));
-                if k > 0 {
-                    let prev = base - 3;
-                    for (x, y) in [(0, 1), (1, 2)] {
-                        mesh.add_triangle(prev + x, prev + y, base + x);
-                        mesh.add_triangle(prev + y, base + y, base + x);
-                    }
-                }
-            }
-            painter.add(egui::Shape::mesh(mesh));
+    let mut mesh = Mesh::default();
+    mesh.vertices
+        .reserve(EDGE_STEPS * 2 + RING_BARS * (RING_SEGMENTS + 1) * 4);
+
+    // Edge: breathes with the voice.
+    let breathe = if motion.calm {
+        0.0
+    } else {
+        on * (0.25 + 1.8 * ring.loud).min(1.0) * (0.6 + 0.4 * (motion.pulse * TAU).sin())
+    };
+    let width = 1.5 + 2.5 * breathe;
+    let bright = if dark {
+        1.0 - on * (0.4 - 0.4 * breathe)
+    } else {
+        1.0
+    };
+    for k in 0..=EDGE_STEPS {
+        let a = -FRAC_PI_2 + k as f32 / EDGE_STEPS as f32 * TAU;
+        let col = p
+            .ctrl_border
+            .lerp_to_gamma(neon(a), on)
+            .gamma_multiply(bright);
+        let base = mesh.vertices.len() as u32;
+        mesh.colored_vertex(c + dir(a) * face, col);
+        mesh.colored_vertex(c + dir(a) * (face + width), col);
+        if k > 0 {
+            let prev = base - 2;
+            mesh.add_triangle(prev, prev + 1, base);
+            mesh.add_triangle(prev + 1, base + 1, base);
         }
     }
 
-    // Bars: one mesh of touching wedges, plus a soft fringe past each tip.
-    let mut mesh = Mesh::default();
-    let quad = |mesh: &mut Mesh, pts: [egui::Pos2; 4], cols: [Color32; 4]| {
+    // Bars, growing inward from just inside the edge.
+    let start = face - 5.0;
+    let pitch = TAU / RING_BARS as f32;
+    let half = pitch * 0.32;
+    let block = |mesh: &mut Mesh, d0: egui::Vec2, d1: egui::Vec2, r0: f32, r1: f32, col| {
         let base = mesh.vertices.len() as u32;
-        for (pt, col) in pts.into_iter().zip(cols) {
+        for pt in [c + d0 * r0, c + d1 * r0, c + d1 * r1, c + d0 * r1] {
             mesh.colored_vertex(pt, col);
         }
         mesh.add_triangle(base, base + 1, base + 2);
         mesh.add_triangle(base, base + 2, base + 3);
     };
-    for k in 0..n {
-        let len = 0.2 * ring[(k + n - 1) % n] + 0.6 * ring[k] + 0.2 * ring[(k + 1) % n];
-        let ac = -PI / 2.0 + k as f32 * slot;
-        let (a0, a1) = (ac - slot / 2.0, ac + slot / 2.0);
-        // A slow shimmer runs round the ring while Vidar is on, so it is never frozen.
-        let shimmer = 1.2 * (0.5 + 0.5 * (ac * 2.0 - time * 1.5).sin());
-        // Waveform: two travelling waves raise big lobes in some places and keep others low,
-        // drifting round with the colours. Silence keeps every bar short.
-        let shape = (0.5 + 0.5 * (3.0 * ac + 1.1 * motion.flow).sin())
-            * (0.6 + 0.4 * (7.0 * ac - 1.7 * motion.flow + 2.0).sin());
-        let len = (len * (0.45 + 1.1 * shape)).min(1.0);
-        let tip = r + REST + on * (shimmer + GROW * len);
-        let bright = 0.6 + 0.4 * len.max(0.4 * voice);
-        quad(
-            &mut mesh,
-            [
-                c + dir(a0) * r,
-                c + dir(a1) * r,
-                c + dir(a1) * tip,
-                c + dir(a0) * tip,
-            ],
-            [
-                colour(a0, 0.55 * bright),
-                colour(a1, 0.55 * bright),
-                colour(a1, bright),
-                colour(a0, bright),
-            ],
-        );
-        // Fringe: fades out past the tip (a glow in the dark theme, a soft edge in light).
-        let fringe = if dark { 2.0 + 6.0 * len * on } else { 1.2 };
-        let edge = if dark { 0.45 * bright } else { 0.6 * bright };
-        quad(
-            &mut mesh,
-            [
-                c + dir(a0) * tip,
-                c + dir(a1) * tip,
-                c + dir(a1) * (tip + fringe),
-                c + dir(a0) * (tip + fringe),
-            ],
-            [colour(a0, edge), colour(a1, edge), clear(a1), clear(a0)],
-        );
+    let top = (RING_SEGMENTS - 1) as f32;
+    for k in 0..RING_BARS {
+        let a = -FRAC_PI_2 + k as f32 * pitch;
+        let (d0, d1) = (dir(a - half), dir(a + half));
+        let col = p.track_idle.lerp_to_gamma(neon(a), on);
+        let lit = 1 + (on * ring.level[k] * top).round() as usize;
+        for s in 0..lit {
+            let r0 = start - s as f32 * (SEG + GAP);
+            let alpha = if !dark {
+                1.0
+            } else if s == 0 {
+                0.75 + 0.15 * on
+            } else {
+                0.45 + 0.55 * s as f32 / top
+            };
+            block(&mut mesh, d0, d1, r0, r0 - SEG, col.gamma_multiply(alpha));
+        }
+        // Peak marker: hangs above the bar, then drops.
+        let peak = (on * ring.hold[k] * top).round() as usize;
+        if peak >= lit {
+            let r0 = start - peak as f32 * (SEG + GAP);
+            let alpha = if dark { 0.85 } else { 1.0 };
+            block(&mut mesh, d0, d1, r0, r0 - 1.6, col.gamma_multiply(alpha));
+        }
     }
     painter.add(egui::Shape::mesh(mesh));
 }
@@ -1313,9 +1570,9 @@ fn draw_voice_ring(
 fn modal_frame(p: &Pal) -> egui::Frame {
     egui::Frame::new()
         .fill(p.surface)
-        .stroke(Stroke::new(1.0, p.border))
-        .corner_radius(14)
-        .inner_margin(egui::Margin::same(18))
+        .stroke(Stroke::new(size::HAIRLINE, p.border))
+        .corner_radius(radius::XL)
+        .inner_margin(egui::Margin::same(space::XL as i8))
 }
 
 /// Match the Windows title bar to the theme (Windows 11; older versions ignore the colours).
@@ -1384,12 +1641,16 @@ pub struct VidarWindow {
     titlebar_dark: Option<bool>,
     /// Smoothed voice-band levels (0..1) driving the logo bars.
     logo_bands: [f32; vidar_dsp::BANDS],
-    /// Length (0..1) of each bar in the voice ring around the power button.
-    ring: [f32; RING_BARS],
+    /// The digital level ring of the power button.
+    ring: VoiceRing,
     /// How far the ring's colours have flowed; advances faster while you talk.
     ring_flow: f32,
-    /// Clock for the pulses rippling out of the ring; runs faster while you talk.
+    /// Clock of the edge's breathing, in turns; runs faster while you talk.
     ring_pulse: f32,
+    /// Windows has animation effects off: stop decorative motion (see `theme::calm`).
+    calm: bool,
+    /// Keyboard focus was already placed in the open dialog: install done, uninstall, help.
+    dialog_focused: [bool; 3],
 }
 
 /// Strength presets for the gate's open threshold.
@@ -1424,7 +1685,7 @@ impl VidarWindow {
         ctx: &egui::Context,
     ) -> Self {
         let v = handle.view();
-        setup_style(ctx, &v.ui_theme);
+        theme::install(ctx, &v.ui_theme);
         if let Ok(mut r) = handle.repaint.lock() {
             *r = Some(ctx.clone());
         }
@@ -1448,91 +1709,129 @@ impl VidarWindow {
             cursor: 0.0,
             titlebar_dark: None,
             logo_bands: [0.0; vidar_dsp::BANDS],
-            ring: [0.0; RING_BARS],
+            ring: VoiceRing::new(),
             ring_flow: 0.0,
             ring_pulse: 0.0,
+            calm: theme::calm(ctx),
+            dialog_focused: [false; 3],
         }
     }
 
     fn header(&mut self, ui: &mut egui::Ui, p: &Pal, v: &View) {
         // The window caption already says "Vidar" and the logo is on the power button, so the
         // header is just the tab bar, centred.
-        {
-            ui.vertical_centered(|ui| {
-                // A pill-shaped tab bar: a sunken track with the active tab raised on it.
-                const TABS: [(Tab, &str, &str); 4] = [
-                    (Tab::Home, "Home", "Turn noise cancellation on or off, and pick your microphone, mode and strength"),
-                    (Tab::Test, "Test", "Record yourself once and compare every mode and strength"),
-                    (Tab::Settings, "Settings", "Appearance, microphone options, apps and Windows, troubleshooting"),
-                    (Tab::About, "About", "Version, licence and the components Vidar is built on"),
-                ];
-                let (seg_w, h, pad) = (76.0, 30.0, 3.0);
-                let (track, _) = ui.allocate_exact_size(vec2(seg_w * TABS.len() as f32 + pad * 2.0, h), Sense::hover());
-                let painter = ui.painter().clone();
-                painter.rect_filled(track, h / 2.0, p.surface2);
-                painter.rect_stroke(track, h / 2.0, Stroke::new(1.0, p.border), StrokeKind::Inside);
-                let busy_test = matches!(v.test.phase, TestPhase::Recording | TestPhase::Analyzing | TestPhase::Playing(_));
-                for (i, (tab, name, tip)) in TABS.into_iter().enumerate() {
-                    let r = Rect::from_min_size(pos2(track.left() + pad + seg_w * i as f32, track.top() + pad), vec2(seg_w, h - pad * 2.0));
-                    let resp = ui.interact(r, ui.scope_id().with(("tab", i)), Sense::click());
-                    let active = self.tab == tab;
-                    let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered() && !active, 0.1);
-                    if active {
-                        painter.rect_filled(r, r.height() / 2.0, p.surface);
-                        painter.rect_stroke(r, r.height() / 2.0, Stroke::new(1.0, p.border), StrokeKind::Inside);
-                    } else if hover > 0.0 {
-                        painter.rect_filled(r, r.height() / 2.0, p.border.gamma_multiply(0.5 * hover));
-                    }
-                    let color = if active { p.text } else { p.muted.lerp_to_gamma(p.text, hover) };
-                    let galley = painter.layout_no_wrap(name.to_string(), if active { semi(13.0) } else { FontId::proportional(13.0) }, color);
-                    let text_pos = r.center() - galley.size() / 2.0;
-                    let text_right = text_pos.x + galley.size().x;
-                    painter.galley(text_pos, galley, color);
-                    // Live dot on Test while it records, analyses or plays.
-                    if tab == Tab::Test && busy_test {
-                        let dot = if v.test.phase == TestPhase::Recording { p.danger } else { p.blue };
-                        painter.circle_filled(pos2(text_right + 6.0, r.center().y - 4.0), 3.0, dot);
-                    }
-                    if resp.hovered() {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                    }
-                    if resp.on_hover_ui(|ui| tip_ui(ui, (name, tip))).clicked() {
-                        self.tab = tab;
-                    }
+        ui.vertical_centered(|ui| {
+            // A pill-shaped tab bar: a sunken track with the active tab raised on it.
+            const TABS: [(Tab, &str, &str); 4] = [
+                (Tab::Home, "Home", "Turn noise cancellation on or off, and pick your microphone, mode and strength"),
+                (Tab::Test, "Test", "Record yourself once and compare every mode and strength"),
+                (Tab::Settings, "Settings", "Appearance, microphone options, apps and Windows, troubleshooting"),
+                (Tab::About, "About", "Version, licence and the components Vidar is built on"),
+            ];
+            let (h, pad) = (size::SEGMENT_H, size::SEGMENT_PAD);
+            // 80 px per tab, less when the window is narrow or zoomed in.
+            let seg_w = ((ui.available_width() - pad * 2.0) / TABS.len() as f32).clamp(40.0, 80.0);
+            let (track, _) = ui.allocate_exact_size(
+                vec2(seg_w * TABS.len() as f32 + pad * 2.0, h),
+                Sense::hover(),
+            );
+            let painter = ui.painter().clone();
+            let pill = (h / 2.0) as u8;
+            painter.rect_filled(track, pill, p.surface2);
+            painter.rect_stroke(
+                track,
+                pill,
+                Stroke::new(size::HAIRLINE, p.ctrl_border),
+                StrokeKind::Inside,
+            );
+            let busy_test = matches!(
+                v.test.phase,
+                TestPhase::Recording | TestPhase::Analyzing | TestPhase::Playing(_)
+            );
+            for (i, (tab, name, tip)) in TABS.into_iter().enumerate() {
+                let r = Rect::from_min_size(
+                    pos2(track.left() + pad + seg_w * i as f32, track.top() + pad),
+                    vec2(seg_w, h - pad * 2.0),
+                );
+                let inner_pill = (r.height() / 2.0) as u8;
+                let resp = ui.interact(r, ui.scope_id().with(("tab", i)), Sense::click());
+                let active = self.tab == tab;
+                let hover = ui.ctx().animate_bool_with_time(
+                    resp.id,
+                    resp.hovered() && !active,
+                    anim(ui.ctx(), motion::FAST),
+                );
+                if active {
+                    painter.rect_filled(r, inner_pill, p.surface);
+                    painter.rect_stroke(
+                        r,
+                        inner_pill,
+                        Stroke::new(size::SELECTED, p.accent),
+                        StrokeKind::Inside,
+                    );
+                } else if hover > 0.0 {
+                    let wash = if resp.is_pointer_button_down_on() {
+                        p.pressed
+                    } else {
+                        p.hover
+                    };
+                    painter.rect_filled(r, inner_pill, wash.gamma_multiply(hover));
                 }
-            });
-        }
+                let color = if active {
+                    p.text
+                } else {
+                    p.muted.lerp_to_gamma(p.text, hover)
+                };
+                let galley = painter.layout_no_wrap(
+                    name.to_string(),
+                    if active {
+                        semi(ty::BODY)
+                    } else {
+                        FontId::proportional(ty::BODY)
+                    },
+                    color,
+                );
+                let text_pos = r.center() - galley.size() / 2.0;
+                let text_right = text_pos.x + galley.size().x;
+                painter.galley(text_pos, galley, color);
+                // Live dot on Test while it records, analyses or plays.
+                if tab == Tab::Test && busy_test {
+                    let dot = if v.test.phase == TestPhase::Recording {
+                        p.danger
+                    } else {
+                        p.blue
+                    };
+                    painter.circle_filled(pos2(text_right + 7.0, r.center().y - 4.0), 3.5, dot);
+                }
+                pointer_cursor(ui, &resp);
+                resp.widget_info(|| {
+                    egui::WidgetInfo::selected(egui::Role::Tab, true, active, name)
+                });
+                focus_ring(ui, p, &resp, inner_pill);
+                if resp.tip((name, tip)).clicked() {
+                    self.tab = tab;
+                }
+            }
+        });
     }
 
     fn status_line(&mut self, ui: &mut egui::Ui, p: &Pal, v: &View) {
-        let color = tone_color(p, v.tone);
-        ui.horizontal_wrapped(|ui| {
-            let (r, _) = ui.allocate_exact_size(vec2(8.0, 16.0), Sense::hover());
-            ui.painter().circle_filled(r.center(), 4.0, color);
-            ui.label(RichText::new(&v.status).color(if v.tone == Tone::Idle {
-                p.muted
-            } else {
-                color
-            }));
+        banner(ui, p, v.tone, |ui| {
+            ui.label(RichText::new(&v.status).color(p.text));
+            if let Some(d) = &v.detail {
+                let label = if self.show_details {
+                    "Hide details"
+                } else {
+                    "Show details"
+                };
+                if link(ui, p, label).clicked() {
+                    self.show_details = !self.show_details;
+                }
+                if self.show_details {
+                    ui.label(RichText::new(d).small().monospace().color(p.muted));
+                }
+            }
         });
-        if let Some(d) = &v.detail {
-            if ui
-                .link(
-                    RichText::new(if self.show_details {
-                        "Hide details"
-                    } else {
-                        "Show details"
-                    })
-                    .small(),
-                )
-                .clicked()
-            {
-                self.show_details = !self.show_details;
-            }
-            if self.show_details {
-                ui.label(RichText::new(d).small().monospace().color(p.muted));
-            }
-        }
     }
 
     // ------------------------------------------------------------ Home
@@ -1542,17 +1841,17 @@ impl VidarWindow {
             card(ui, p, |ui| {
                 ui.label(
                     RichText::new("One-time setup")
-                        .font(semi(16.0))
+                        .font(semi(ty::SUBTITLE))
                         .color(p.text),
                 );
                 ui.label(RichText::new("Apps get your clean voice from Vidar AI Microphone, which needs the VB-CABLE driver by VB-Audio (donationware).").color(p.muted));
-                ui.add_space(4.0);
+                ui.add_space(space::XS);
                 if primary(ui, p, "Install virtual microphone", ui.available_width()) {
                     self.handle.send(Cmd::InstallDriver);
                 }
                 ui.label(RichText::new("Windows will ask for permission. Your speakers and microphone stay as they are.").small().color(p.muted));
             });
-            ui.add_space(8.0);
+            ui.add_space(space::SM);
         }
 
         // Read the engine's meters directly so the logo follows the voice frame by frame.
@@ -1563,7 +1862,6 @@ impl VidarWindow {
             .map(|m| m.snapshot());
         let voice = live.map_or(0.0, |m| m.speech_prob as f32);
         let dt = ui.input(|i| i.stable_dt).min(0.1);
-        let time = ui.input(|i| i.time) as f32;
         // Higher bands carry less energy in speech; tilt them up ~4 dB per octave so
         // "s" and "t" sounds reach the outer bars too.
         let raw: [f32; vidar_dsp::BANDS] = std::array::from_fn(|k| {
@@ -1576,27 +1874,23 @@ impl VidarWindow {
             let tau = if target > *s { 0.025 } else { 0.16 };
             *s += (target - *s) * (1.0 - (-dt / tau).exp());
         }
-        for (k, s) in self.ring.iter_mut().enumerate() {
-            let target = ring_target(k, &raw, time);
-            let (attack, release) = ring_speed(k);
-            let tau = if target > *s { attack } else { release };
-            *s += (target - *s) * (1.0 - (-dt / tau).exp());
-        }
+        self.ring.update(dt, &raw);
         let voice = ui
             .ctx()
             .animate_value_with_time(ui.scope_id().with("voice"), voice, 0.15);
         // The colours drift slowly in silence and stream faster while you talk. Integrated
         // frame by frame, so a change of speed never makes them jump.
-        let loudness = self.ring.iter().sum::<f32>() / RING_BARS as f32;
-        let talking = voice.max(1.5 * loudness).min(1.0);
-        self.ring_flow += dt * (0.4 + 2.6 * talking);
-        self.ring_pulse += dt * (0.35 + 0.65 * talking);
+        let talking = voice.max(1.5 * self.ring.loud).min(1.0);
+        if !self.calm {
+            self.ring_flow += dt * (0.4 + 2.6 * talking);
+            self.ring_pulse += dt * (0.35 + 0.65 * talking);
+        }
         let motion = RingMotion {
             flow: self.ring_flow,
             pulse: self.ring_pulse,
-            loudness,
+            calm: self.calm,
         };
-        if power_button(ui, p, v.state, voice, &self.logo_bands, &self.ring, motion) {
+        if power_button(ui, p, v.state, &self.logo_bands, &self.ring, motion) {
             if v.cable_installed || v.state != RunState::Stopped {
                 self.handle.send(Cmd::Toggle);
             } else {
@@ -1624,16 +1918,16 @@ impl VidarWindow {
             ),
         };
         ui.vertical_centered(|ui| {
-            ui.label(RichText::new(headline).font(semi(17.0)).color(p.text));
+            ui.label(RichText::new(headline).font(semi(ty::TITLE)).color(p.text));
             if !sub.is_empty() {
                 ui.label(RichText::new(sub).color(p.muted));
             }
         });
         if matches!(v.tone, Tone::Warn | Tone::Bad) {
-            ui.add_space(4.0);
+            ui.add_space(space::XS);
             self.status_line(ui, p, v);
         }
-        ui.add_space(10.0);
+        ui.add_space(space::MD);
 
         let running = v.state != RunState::Stopped;
         card(ui, p, |ui| {
@@ -1663,7 +1957,7 @@ impl VidarWindow {
                         }
                     })
                     .response
-                    .on_hover_ui(|ui| tip_ui(ui, TIP_MIC));
+                    .tip(TIP_MIC);
             });
             if running {
                 ui.label(
@@ -1680,7 +1974,7 @@ impl VidarWindow {
                 ui.label(RichText::new(hint).small().color(p.warn));
             }
 
-            ui.add_space(6.0);
+            ui.add_space(space::SM);
             section_help(ui, p, "Mode", MODE_HELP);
             let mode = usize::from(v.engine == "dpdfnet");
             if let Some(i) = segmented(ui, p, &["Voice", "Voice HD"], Some(mode), true, &MODE_TIPS)
@@ -1695,7 +1989,7 @@ impl VidarWindow {
                 "Cleanest voice: about 60 ms delay, more processor work"
             };
             ui.label(RichText::new(mode_hint).small().color(p.muted));
-            ui.add_space(6.0);
+            ui.add_space(space::SM);
             section_help(ui, p, "Strength", STRENGTH_HELP);
             let names: Vec<&str> = STRENGTH.iter().map(|s| s.0).collect();
             if let Some(i) = segmented(
@@ -1738,41 +2032,68 @@ impl VidarWindow {
             if t.variants.is_empty() {
                 ui.label(
                     RichText::new("Find your best setting")
-                        .font(semi(16.0))
+                        .font(semi(ty::SUBTITLE))
                         .color(p.text),
                 );
                 ui.label(
                     RichText::new("Record yourself talking with your usual background noise. Vidar runs that recording through every mode and strength so you can listen and compare.")
                         .color(p.muted),
                 );
-                ui.add_space(6.0);
+                ui.add_space(space::SM);
             }
 
             // Start / stop.
             let width = ui.available_width();
             if recording || analyzing {
                 ui.horizontal(|ui| {
-                    let cancel_w = 84.0;
+                    let cancel_w = 84.0; // wide enough for "Cancel"
                     let main_w = width - cancel_w - ui.spacing().item_spacing.x;
                     if recording {
-                        let b = egui::Button::new(RichText::new("Stop and compare").font(semi(14.0)).color(Color32::WHITE))
-                            .fill(p.danger)
-                            .corner_radius(9)
-                            .min_size(vec2(main_w, 36.0));
                         let enough = t.progress * t.max_seconds >= 2.0;
-                        if ui.add_enabled(enough, b).on_hover_ui(|ui| tip_ui(ui, ("Stop and compare", "Ends the recording here and runs it through every mode and strength."))).on_disabled_hover_ui(|ui| tip_ui(ui, ("Stop and compare", "Keep talking: at least 2 seconds are needed."))).clicked() {
+                        let r = ui
+                            .add_enabled_ui(enough, |ui| {
+                                button(ui, p, Kind::DangerSolid, "Stop and compare", main_w)
+                            })
+                            .inner;
+                        if r.tip((
+                            "Stop and compare",
+                            "Ends the recording here and runs it through every mode and strength.",
+                        ))
+                        .on_disabled_hover_ui(|ui| {
+                            tip_ui(
+                                ui,
+                                (
+                                    "Stop and compare",
+                                    "Keep talking: at least 2 seconds are needed.",
+                                ),
+                            )
+                        })
+                        .clicked()
+                        {
                             self.handle.send(Cmd::FinishTest);
                         }
                     } else {
-                        ui.add_enabled(
-                            false,
-                            egui::Button::new(format!("Comparing {} of {}...", ((t.progress * TEST_OPTIONS.len() as f64) as usize + 1).min(TEST_OPTIONS.len()), TEST_OPTIONS.len()))
-                                .corner_radius(9)
-                                .min_size(vec2(main_w, 36.0)),
+                        let label = format!(
+                            "Comparing {} of {}...",
+                            ((t.progress * TEST_OPTIONS.len() as f64) as usize + 1)
+                                .min(TEST_OPTIONS.len()),
+                            TEST_OPTIONS.len()
                         );
+                        ui.add_enabled_ui(false, |ui| {
+                            button(ui, p, Kind::Primary, &label, main_w);
+                        });
                     }
-                    let c = egui::Button::new(RichText::new("Cancel").color(p.text)).fill(p.surface2).stroke(Stroke::new(1.0, p.border)).corner_radius(9).min_size(vec2(cancel_w, 36.0));
-                    if ui.add(c).on_hover_ui(|ui| tip_ui(ui, ("Cancel", "Throws this recording away."))).clicked() {
+                    if button_h(
+                        ui,
+                        p,
+                        Kind::Secondary,
+                        "Cancel",
+                        cancel_w,
+                        Some(size::BUTTON_H),
+                    )
+                    .tip(("Cancel", "Throws this recording away."))
+                    .clicked()
+                    {
                         self.handle.send(Cmd::StopTest);
                     }
                 });
@@ -1792,12 +2113,12 @@ impl VidarWindow {
                 self.selected = Track::Original;
                 self.handle.send(Cmd::RecordTest(MAX_TEST_SECONDS));
             }
-            ui.add_space(8.0);
+            ui.add_space(space::SM);
 
             self.waveform(ui, p, v, width);
 
             if ready {
-                ui.add_space(4.0);
+                ui.add_space(space::XS);
                 self.transport(ui, p, v, playing);
             }
             if let Some(e) = &t.error {
@@ -1816,7 +2137,7 @@ impl VidarWindow {
             && t.phase != TestPhase::Analyzing;
         if !ready {
             ui.label(RichText::new(format!("Up to {MAX_TEST_SECONDS:.0} seconds. Plays on your speakers; nothing is saved to disk")).small().color(p.muted));
-            ui.add_space(8.0);
+            ui.add_space(space::SM);
             self.tone_card(ui, p, v);
             return;
         }
@@ -1829,16 +2150,19 @@ impl VidarWindow {
         card(ui, p, |ui| {
             section_help(ui, p, "Compare", COMPARE_HELP);
             if !t.speech_detected {
-                egui::Frame::new().fill(p.warn.gamma_multiply(0.15)).corner_radius(8).inner_margin(egui::Margin::same(8)).show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.label(RichText::new("No speech found in this recording").font(semi(13.0)).color(p.text));
+                banner(ui, p, Tone::Warn, |ui| {
+                    ui.label(
+                        RichText::new("No speech found in this recording")
+                            .font(semi(ty::BODY))
+                            .color(p.text),
+                    );
                     ui.label(RichText::new("You can still hear how each mode removes your background noise. To compare how your voice sounds, record again and talk normally.").small().color(p.muted));
                 });
-                ui.add_space(6.0);
+                ui.add_space(space::SM);
             }
             self.compare_grid(ui, p, v, playing, best);
         });
-        ui.add_space(6.0);
+        ui.add_space(space::SM);
         ui.label(
             RichText::new(
                 "Click a tile to hear it. Space plays or stops, Up and Down switch versions",
@@ -1846,7 +2170,7 @@ impl VidarWindow {
             .small()
             .color(p.muted),
         );
-        ui.add_space(8.0);
+        ui.add_space(space::SM);
         self.tone_card(ui, p, v);
     }
 
@@ -1883,14 +2207,45 @@ impl VidarWindow {
         self.handle.send(Cmd::StopTest);
     }
 
+    /// A dialog is open on top of the window.
+    fn dialog_open(&self, v: &View) -> bool {
+        self.confirm_uninstall
+            || self.show_help
+            || matches!(v.install, InstallState::Running | InstallState::Done(_))
+    }
+
     /// Space = play / stop, Up / Down = previous / next version.
     fn test_keys(&mut self, ui: &mut egui::Ui, v: &View) {
         let playing = matches!(v.test.phase, TestPhase::Playing(_));
+        // Space always plays or stops here, before a focused control can take it as a click,
+        // except where it is needed: typing in a text field, an open list, a dialog.
+        let ctx = ui.ctx().clone();
+        let free =
+            !ctx.text_edit_focused() && !egui::Popup::is_any_open(&ctx) && !self.dialog_open(v);
+        // The tone graph uses Up and Down for its focused point.
+        let tone_focus =
+            ui.memory(|m| (0..vidar_dsp::EQ_BANDS).any(|i| m.has_focus(tone_point_id(i))));
         let (space, up, down) = ui.input_mut(|i| {
+            if !free {
+                return (false, false, false);
+            }
+            // A held key repeats; only the first press counts for Space.
+            let space = i.events.iter().any(|e| {
+                matches!(
+                    e,
+                    egui::Event::Key {
+                        key: egui::Key::Space,
+                        pressed: true,
+                        repeat: false,
+                        ..
+                    }
+                )
+            });
+            i.consume_key(egui::Modifiers::NONE, egui::Key::Space);
             (
-                i.consume_key(egui::Modifiers::NONE, egui::Key::Space),
-                i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
-                i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
+                space,
+                !tone_focus && i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
+                !tone_focus && i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
             )
         });
         if space {
@@ -1954,7 +2309,7 @@ impl VidarWindow {
             },
         );
         let painter = ui.painter().clone();
-        painter.rect_filled(rect, 10.0, p.surface2);
+        painter.rect_filled(rect, radius::MD, p.surface2);
         let inner = rect.shrink2(vec2(8.0, 18.0));
         let frac = |x: f32| f64::from(((x - inner.left()) / inner.width()).clamp(0.0, 1.0));
         let x_of = |f: f64| inner.left() + inner.width() * f as f32;
@@ -1995,14 +2350,14 @@ impl VidarWindow {
                 rect.left_top() + vec2(24.0, 12.0),
                 Align2::LEFT_CENTER,
                 format!("REC  {}  - talk normally", fmt_secs(elapsed)),
-                semi(12.0),
+                semi(ty::CAPTION),
                 p.text,
             );
             painter.text(
                 rect.right_top() + vec2(-10.0, 12.0),
                 Align2::RIGHT_CENTER,
                 format!("max {}", fmt_secs(t.max_seconds)),
-                FontId::proportional(11.0),
+                FontId::proportional(ty::MICRO),
                 p.muted,
             );
             ui.ctx().request_repaint();
@@ -2024,7 +2379,7 @@ impl VidarWindow {
                 rect.left_top() + vec2(10.0, 8.0),
                 Align2::LEFT_TOP,
                 "Processing your recording with every mode...",
-                semi(12.0),
+                semi(ty::CAPTION),
                 p.text,
             );
             ui.ctx().request_repaint();
@@ -2035,7 +2390,7 @@ impl VidarWindow {
                 rect.center(),
                 Align2::CENTER_CENTER,
                 "Your recording appears here",
-                FontId::proportional(13.0),
+                FontId::proportional(ty::BODY),
                 p.muted,
             );
             return;
@@ -2080,6 +2435,32 @@ impl VidarWindow {
                 }
             }
         }
+        // Keyboard: Left and Right move the playhead by 2 %. The waveform owns the horizontal
+        // arrows while it has focus.
+        if resp.has_focus() {
+            ui.memory_mut(|m| {
+                m.set_focus_lock_filter(
+                    resp.id,
+                    egui::EventFilter {
+                        horizontal_arrows: true,
+                        ..Default::default()
+                    },
+                )
+            });
+            let step = ui.input_mut(|i| {
+                let right = i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight);
+                let left = i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft);
+                0.02 * (f64::from(u8::from(right)) - f64::from(u8::from(left)))
+            });
+            if step != 0.0 {
+                let at = if playing { t.progress } else { self.cursor };
+                let to = (at + step).clamp(0.0, 1.0);
+                self.cursor = to;
+                if playing {
+                    self.play_from(to);
+                }
+            }
+        }
         if resp.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
         }
@@ -2088,7 +2469,7 @@ impl VidarWindow {
         if let Some((a, b)) = self.sel {
             let r =
                 Rect::from_x_y_ranges(x_of(a)..=x_of(b), rect.top() + 2.0..=rect.bottom() - 2.0);
-            painter.rect_filled(r, 4.0, p.blue.gamma_multiply(0.16));
+            painter.rect_filled(r, radius::SM, p.blue.gamma_multiply(0.16));
             for x in [r.left(), r.right()] {
                 painter.line_segment(
                     [pos2(x, r.top()), pos2(x, r.bottom())],
@@ -2103,7 +2484,7 @@ impl VidarWindow {
                     fmt_secs(a * t.seconds),
                     fmt_secs(b * t.seconds)
                 ),
-                FontId::proportional(10.5),
+                FontId::proportional(ty::MICRO),
                 p.blue,
             );
         }
@@ -2156,20 +2537,39 @@ impl VidarWindow {
             rect.left_top() + vec2(10.0, 8.0),
             Align2::LEFT_TOP,
             caption,
-            semi(11.0),
+            semi(ty::MICRO),
             p.muted,
         );
-        resp.on_hover_ui(|ui| tip_ui(ui, TIP_WAVE));
+        focus_ring(ui, p, &resp, radius::MD);
+        resp.tip(TIP_WAVE);
     }
 
     /// Play / stop, the time, and the loop with a way to clear it.
     fn transport(&mut self, ui: &mut egui::Ui, p: &Pal, v: &View, playing: bool) {
         let t = &v.test;
         ui.horizontal(|ui| {
-            let (r, resp) = ui.allocate_exact_size(vec2(34.0, 34.0), Sense::click());
+            let (r, resp) = ui.allocate_exact_size(
+                vec2(size::BUTTON_H, size::BUTTON_H),
+                Sense::click(),
+            );
             let painter = ui.painter();
             let hovered = resp.hovered();
-            painter.circle_filled(r.center(), 17.0, if hovered { p.accent.gamma_multiply(0.85) } else { p.accent });
+            let fill = if resp.is_pointer_button_down_on() {
+                p.accent_pressed
+            } else if hovered {
+                p.accent_hover
+            } else {
+                p.accent
+            };
+            painter.circle_filled(r.center(), size::BUTTON_H / 2.0, fill);
+            focus_ring_circle(ui, p, &resp, r.center(), size::BUTTON_H / 2.0);
+            resp.widget_info(|| {
+                egui::WidgetInfo::labeled(
+                    egui::Role::Button,
+                    true,
+                    if playing { "Stop" } else { "Play" },
+                )
+            });
             if playing {
                 painter.rect_filled(Rect::from_center_size(r.center(), vec2(10.0, 10.0)), 2.0, p.on_accent);
             } else {
@@ -2179,7 +2579,7 @@ impl VidarWindow {
             if hovered {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
             }
-            if resp.on_hover_ui(|ui| tip_ui(ui, if playing { ("Stop", "Stops playback. Shortcut: Space.") } else { ("Play", "Plays the selected version. Shortcut: Space.") })).clicked() {
+            if resp.tip(if playing { ("Stop", "Stops playback. Shortcut: Space.") } else { ("Play", "Plays the selected version. Shortcut: Space.") }).clicked() {
                 if playing {
                     self.stop_playback(v);
                 } else {
@@ -2189,15 +2589,15 @@ impl VidarWindow {
             }
             let head = if playing { t.progress } else { self.cursor };
             // Current time bright, total muted, in the UI font.
-            ui.add_space(4.0);
+            ui.add_space(space::XS);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
-                ui.label(RichText::new(fmt_secs(head * t.seconds)).font(semi(13.0)).color(p.text));
-                ui.label(RichText::new(format!("  /  {}", fmt_secs(t.seconds))).font(FontId::proportional(13.0)).color(p.muted));
+                ui.label(RichText::new(fmt_secs(head * t.seconds)).font(semi(ty::BODY)).color(p.text));
+                ui.label(RichText::new(format!("  /  {}", fmt_secs(t.seconds))).font(FontId::proportional(ty::BODY)).color(p.muted));
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if self.sel.is_some()
-                    && ui.link(RichText::new("Clear loop").small()).on_hover_ui(|ui| tip_ui(ui, ("Clear loop", "Plays the whole recording again. Double-clicking the waveform does the same."))).clicked() {
+                    && link(ui, p, "Clear loop").tip(("Clear loop", "Plays the whole recording again. Double-clicking the waveform does the same.")).clicked() {
                         self.sel = None;
                         if playing {
                             self.play_from(t.progress);
@@ -2218,9 +2618,11 @@ impl VidarWindow {
         best: Option<usize>,
     ) {
         let t = &v.test;
-        const LABEL_W: f32 = 92.0;
         const GAP: f32 = 6.0;
         const TILE_H: f32 = 52.0;
+        // The mode names take about a quarter of the row (92 px at the usual width); in a
+        // narrow or zoomed window they shrink so the three tiles keep their room.
+        let label_w = (ui.available_width() * 0.26).clamp(60.0, 92.0);
 
         // Original.
         let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 38.0), Sense::click());
@@ -2228,18 +2630,31 @@ impl VidarWindow {
         let painter = ui.painter().clone();
         painter.rect_filled(
             r,
-            10.0,
+            radius::MD,
             if selected {
-                p.blue.gamma_multiply(0.14)
+                p.blue.gamma_multiply(alpha::SELECTED)
+            } else if resp.is_pointer_button_down_on() {
+                p.pressed
             } else if resp.hovered() {
-                p.surface2
+                p.hover
             } else {
-                p.surface2.gamma_multiply(0.55)
+                p.surface2.gamma_multiply(alpha::REST)
             },
         );
-        if selected {
-            painter.rect_stroke(r, 10.0, Stroke::new(1.5, p.blue), StrokeKind::Inside);
-        }
+        painter.rect_stroke(
+            r,
+            radius::MD,
+            if selected {
+                Stroke::new(size::SELECTED, p.blue)
+            } else {
+                Stroke::new(size::HAIRLINE, p.ctrl_border)
+            },
+            StrokeKind::Inside,
+        );
+        resp.widget_info(|| {
+            egui::WidgetInfo::selected(egui::Role::RadioButton, true, selected, "Original")
+        });
+        focus_ring(ui, p, &resp, radius::MD);
         let ind = pos2(r.left() + 18.0, r.center().y);
         play_indicator(
             &painter,
@@ -2254,51 +2669,46 @@ impl VidarWindow {
             pos2(r.left() + 34.0, r.center().y),
             Align2::LEFT_CENTER,
             "Original",
-            semi(13.5),
+            semi(ty::BODY),
             p.text,
         );
         painter.text(
             pos2(r.right() - 12.0, r.center().y),
             Align2::RIGHT_CENTER,
             "your microphone, before Vidar",
-            FontId::proportional(11.5),
+            FontId::proportional(ty::CAPTION),
             p.muted,
         );
         if resp.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
         if resp
-            .on_hover_ui(|ui| {
-                tip_ui(
-                    ui,
-                    (
-                        "Original",
-                        "Your recording as the microphone delivered it, without noise removal or voice tone.",
-                    ),
-                )
-            })
+            .tip((
+                "Original",
+                "Your recording as the microphone delivered it, without noise removal or voice tone.",
+            ))
             .clicked()
             && !(selected && playing)
         {
             self.choose(Track::Original, playing);
         }
-        ui.add_space(10.0);
+        ui.add_space(space::MD);
 
         // Column headers.
         let w = ui.available_width();
-        let tile_w = (w - LABEL_W - GAP * 2.0) / 3.0;
+        let tile_w = (w - label_w - GAP * 2.0) / 3.0;
         let (hdr, _) = ui.allocate_exact_size(vec2(w, 16.0), Sense::hover());
         for (k, (name, _)) in STRENGTH.iter().enumerate() {
-            let x = hdr.left() + LABEL_W + k as f32 * (tile_w + GAP) + tile_w / 2.0;
+            let x = hdr.left() + label_w + k as f32 * (tile_w + GAP) + tile_w / 2.0;
             ui.painter().text(
                 pos2(x, hdr.center().y),
                 Align2::CENTER_CENTER,
                 *name,
-                semi(11.5),
+                semi(ty::CAPTION),
                 p.muted,
             );
         }
-        ui.add_space(4.0);
+        ui.add_space(space::XS);
 
         // One row per mode.
         let mut modes: Vec<&'static str> = Vec::new();
@@ -2317,34 +2727,39 @@ impl VidarWindow {
                 pos2(row.left() + 2.0, row.center().y - 8.0),
                 Align2::LEFT_CENTER,
                 mode,
-                semi(13.5),
+                semi(ty::BODY),
                 p.text,
             );
+            let narrow = label_w < 80.0;
             let sub = first.map_or("not available".to_string(), |x| {
-                format!(
-                    "{:.0} ms · {}",
-                    x.delay_ms,
-                    cpu_text(x.cpu_percent).replace(" of 1 core", " CPU")
-                )
+                if narrow {
+                    format!("{:.0} ms", x.delay_ms)
+                } else {
+                    format!(
+                        "{:.0} ms · {}",
+                        x.delay_ms,
+                        cpu_text(x.cpu_percent).replace(" of 1 core", " CPU")
+                    )
+                }
             });
             ui.painter().text(
                 pos2(row.left() + 2.0, row.center().y + 9.0),
                 Align2::LEFT_CENTER,
                 sub,
-                FontId::proportional(10.5),
+                FontId::proportional(ty::MICRO),
                 p.muted,
             );
             if let Some(x) = first {
                 let (cpu, delay) = (x.cpu_percent, x.delay_ms);
                 ui.interact(
-                    Rect::from_min_size(row.min, vec2(LABEL_W - 6.0, TILE_H)),
+                    Rect::from_min_size(row.min, vec2(label_w - 6.0, TILE_H)),
                     ui.scope_id().with(("mode", mode)),
                     Sense::hover(),
                 )
-                .on_hover_ui(|ui| {
+                .tip_with(|ui| {
                     tip_ui(ui, METRIC_TIPS[2]);
-                    ui.label(RichText::new(format!("{mode}: about {delay:.0} ms.")).size(12.5));
-                    ui.add_space(4.0);
+                    ui.label(RichText::new(format!("{mode}: about {delay:.0} ms.")).size(ty::CAPTION));
+                    ui.add_space(space::XS);
                     tip_ui(ui, METRIC_TIPS[3]);
                     let n = cpu_count();
                     ui.label(
@@ -2353,7 +2768,7 @@ impl VidarWindow {
                             cpu_text(cpu),
                             cpu / n as f64
                         ))
-                        .size(12.5),
+                        .size(ty::CAPTION),
                     );
                 });
             }
@@ -2366,7 +2781,7 @@ impl VidarWindow {
                     continue;
                 };
                 let r = Rect::from_min_size(
-                    pos2(row.left() + LABEL_W + k as f32 * (tile_w + GAP), row.top()),
+                    pos2(row.left() + label_w + k as f32 * (tile_w + GAP), row.top()),
                     vec2(tile_w, TILE_H),
                 );
                 self.compare_tile(ui, p, v, r, i, playing, best == Some(i));
@@ -2375,7 +2790,7 @@ impl VidarWindow {
         }
 
         // What is selected, and a way to use it.
-        ui.add_space(4.0);
+        ui.add_space(space::XS);
         ui.horizontal(|ui| match self.selected {
             Track::Variant(i)
                 if t.variants.get(i).is_some_and(|x| x.unavailable.is_none()) =>
@@ -2383,12 +2798,12 @@ impl VidarWindow {
                 let var = &t.variants[i];
                 ui.label(
                     RichText::new(option_name(&var.option))
-                        .font(semi(13.0))
+                        .font(semi(ty::BODY))
                         .color(p.text),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if is_current(&var.option, v) {
-                        badge(ui, p.accent.gamma_multiply(0.18), p.accent, "In use");
+                        badge(ui, p.accent.gamma_multiply(alpha::TINT), p.accent, "In use");
                     } else if primary_tip(
                         ui,
                         p,
@@ -2443,32 +2858,45 @@ impl VidarWindow {
         let hovered = resp.hovered() && available;
         let painter = ui.painter().clone();
         let fill = if selected {
-            p.accent.gamma_multiply(0.14)
+            p.accent.gamma_multiply(alpha::SELECTED)
+        } else if hovered && resp.is_pointer_button_down_on() {
+            p.pressed
         } else if hovered {
-            p.surface2
+            p.hover
         } else {
-            p.surface2.gamma_multiply(0.55)
+            p.surface2.gamma_multiply(alpha::REST)
         };
-        painter.rect_filled(r, 10.0, fill);
+        painter.rect_filled(r, radius::MD, fill);
         let stroke = if selected {
-            Stroke::new(1.5, p.accent)
+            Stroke::new(size::SELECTED, p.accent)
         } else if current {
-            Stroke::new(1.0, p.accent.gamma_multiply(0.5))
+            Stroke::new(size::HAIRLINE, p.accent)
         } else {
-            Stroke::new(1.0, p.border.gamma_multiply(0.7))
+            Stroke::new(size::HAIRLINE, p.ctrl_border)
         };
-        painter.rect_stroke(r, 10.0, stroke, StrokeKind::Inside);
+        painter.rect_stroke(r, radius::MD, stroke, StrokeKind::Inside);
+        if available {
+            resp.widget_info(|| {
+                egui::WidgetInfo::selected(
+                    egui::Role::RadioButton,
+                    true,
+                    selected,
+                    option_name(&var.option),
+                )
+            });
+            focus_ring(ui, p, &resp, radius::MD);
+        }
 
         if !available {
             painter.text(
                 r.center(),
                 Align2::CENTER_CENTER,
                 "not available",
-                FontId::proportional(11.0),
+                FontId::proportional(ty::MICRO),
                 p.muted,
             );
             let why = var.unavailable.clone().unwrap_or_default();
-            resp.on_hover_ui(|ui| tip_ui_owned(ui, "Not available", &why));
+            resp.tip_with(|ui| tip_ui_owned(ui, "Not available", &why));
             return;
         }
 
@@ -2481,7 +2909,11 @@ impl VidarWindow {
             pos2(r.center().x, r.top() + 19.0),
             Align2::CENTER_CENTER,
             headline,
-            semi(15.0),
+            semi(if r.width() < 64.0 {
+                ty::BODY
+            } else {
+                ty::SUBTITLE
+            }),
             p.text,
         );
         let (verdict, vcolor) = if !t.speech_detected {
@@ -2495,7 +2927,7 @@ impl VidarWindow {
             pos2(r.center().x, r.top() + 37.0),
             Align2::CENTER_CENTER,
             verdict,
-            FontId::proportional(10.5),
+            FontId::proportional(ty::MICRO),
             vcolor,
         );
 
@@ -2516,7 +2948,7 @@ impl VidarWindow {
                 c,
                 Align2::CENTER_CENTER,
                 "★",
-                FontId::proportional(10.0),
+                FontId::proportional(ty::MICRO),
                 p.on_accent,
             );
         }
@@ -2528,34 +2960,34 @@ impl VidarWindow {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
         let speech = t.speech_detected;
-        let resp = resp.on_hover_ui(|ui| {
+        let resp = resp.tip_with(|ui| {
             ui.set_max_width(280.0);
-            ui.label(RichText::new(option_name(&var.option)).font(semi(13.0)));
+            ui.label(RichText::new(option_name(&var.option)).font(semi(ty::BODY)));
             if best {
                 ui.label(
                     RichText::new("★ Best for you: removes the most noise without making your voice noticeably quieter.")
-                        .size(12.0)
+                        .size(ty::CAPTION)
                         .color(p.accent),
                 );
             }
             if current {
                 ui.label(
                     RichText::new("● The mode and strength you use now.")
-                        .size(12.0)
+                        .size(ty::CAPTION)
                         .color(p.accent),
                 );
             }
-            ui.add_space(4.0);
+            ui.add_space(space::XS);
             ui.label(
-                RichText::new(format!("Noise removed: {:.0} dB", var.noise_removed_db)).size(12.5),
+                RichText::new(format!("Noise removed: {:.0} dB", var.noise_removed_db)).size(ty::CAPTION),
             );
-            ui.label(RichText::new(METRIC_TIPS[0].1).size(11.5).color(p.muted));
+            ui.label(RichText::new(METRIC_TIPS[0].1).size(ty::CAPTION).color(p.muted));
             if speech {
-                ui.add_space(2.0);
+                ui.add_space(space::XXS);
                 ui.label(
-                    RichText::new(format!("Voice: {:+.1} dB", var.voice_change_db)).size(12.5),
+                    RichText::new(format!("Voice: {:+.1} dB", var.voice_change_db)).size(ty::CAPTION),
                 );
-                ui.label(RichText::new(METRIC_TIPS[1].1).size(11.5).color(p.muted));
+                ui.label(RichText::new(METRIC_TIPS[1].1).size(ty::CAPTION).color(p.muted));
             }
         });
         if resp.clicked() && !(selected && playing) {
@@ -2574,7 +3006,7 @@ impl VidarWindow {
             for (row, chunk) in labels.chunks(TONE_ROW).enumerate() {
                 let first = row * TONE_ROW;
                 if row > 0 {
-                    ui.add_space(4.0);
+                    ui.add_space(space::XS);
                 }
                 let row_sel = sel
                     .and_then(|s| s.checked_sub(first))
@@ -2585,7 +3017,7 @@ impl VidarWindow {
                         .send(Cmd::SetEqPreset(TONE_PRESETS[first + i].0.to_string()));
                 }
             }
-            ui.add_space(6.0);
+            ui.add_space(space::SM);
             let gains = vidar_dsp::eq_preset(&v.eq_preset).unwrap_or(v.eq_custom_db);
             if let Some((g, done)) = tone_curve(ui, p, gains, v.eq_preset != "off") {
                 self.handle.send(Cmd::SetEqCustom {
@@ -2602,7 +3034,7 @@ impl VidarWindow {
                 ui.label(RichText::new(hint).small().color(p.muted));
                 if v.eq_preset == "custom" && v.eq_custom_db.iter().any(|&g| g != 0.0) {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.link(RichText::new("Flatten curve").small()).clicked() {
+                        if link(ui, p, "Flatten curve").clicked() {
                             self.handle.send(Cmd::SetEqCustom {
                                 gains_db: [0.0; vidar_dsp::EQ_BANDS],
                                 save: true,
@@ -2648,9 +3080,9 @@ impl VidarWindow {
         }
 
         ui.label(RichText::new("How loud apps hear you").color(p.text))
-            .on_hover_ui(|ui| tip_ui(ui, TIP_LEVEL));
+            .tip(TIP_LEVEL);
         let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 10.0), Sense::hover());
-        resp.on_hover_ui(|ui| tip_ui(ui, TIP_LEVEL));
+        resp.tip(TIP_LEVEL);
         let x_of = |db: f32| rect.left() + rect.width() * ((db - LOW) / -LOW).clamp(0.0, 1.0);
         let painter = ui.painter();
         painter.rect_filled(rect, 5.0, p.surface2);
@@ -2747,13 +3179,34 @@ impl VidarWindow {
         };
         ui.horizontal(|ui| {
             ui.label(RichText::new("Fine-tune strength").color(p.text))
-                .on_hover_ui(|ui| tip_ui(ui, TIP_FINE));
+                .tip(TIP_FINE);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(RichText::new(now).font(semi(13.0)).color(p.text));
+                ui.label(RichText::new(now).font(semi(ty::BODY)).color(p.text));
             });
         });
         ui.spacing_mut().slider_width = ui.available_width();
-        let r = ui.add(egui::Slider::new(&mut self.fine, MIN..=MAX).show_value(false));
+        // Rail and handle at 3:1 against the card, with an outlined handle; keyboard focus
+        // (and dragging) turns the outline into the focus colour.
+        let r = ui
+            .scope(|ui| {
+                let keyboard = theme::keyboard_active(ui.ctx());
+                let w = &mut ui.visuals_mut().widgets;
+                for state in [&mut w.inactive, &mut w.hovered] {
+                    state.bg_fill = p.ctrl_border;
+                    state.weak_bg_fill = p.ctrl_border;
+                    state.bg_stroke = Stroke::new(size::FOCUS_W, p.text);
+                }
+                w.active.bg_fill = p.ctrl_border;
+                // The focus colour only for keyboard users; a mouse drag keeps the outline.
+                w.active.bg_stroke = if keyboard {
+                    Stroke::new(size::FOCUS_W, p.focus)
+                } else {
+                    Stroke::new(size::FOCUS_W, p.text)
+                };
+                ui.add(egui::Slider::new(&mut self.fine, MIN..=MAX).show_value(false))
+            })
+            .inner;
+
         // Preset marks under the track, where the handle sits for each preset.
         let pad = r.rect.height() / 2.5;
         let (l, w) = (r.rect.left() + pad, r.rect.width() - 2.0 * pad);
@@ -2769,18 +3222,18 @@ impl VidarWindow {
                 pos2(px, marks.top() + 3.0),
                 Align2::CENTER_TOP,
                 name,
-                FontId::proportional(11.0),
+                FontId::proportional(ty::MICRO),
                 p.muted,
             );
         }
-        ui.add_space(4.0);
+        ui.add_space(space::XS);
         ui.horizontal(|ui| {
             ui.label(RichText::new("Keeps every word").small().color(p.muted));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(RichText::new("Keeps out more noise").small().color(p.muted));
             });
         });
-        let r = r.on_hover_ui(|ui| tip_ui(ui, TIP_FINE));
+        let r = r.tip(TIP_FINE);
         self.fine_drag = r.dragged();
         if r.changed() {
             self.handle.send(Cmd::SetVad(f64::from(self.fine)));
@@ -2804,12 +3257,12 @@ impl VidarWindow {
                 &THEME_TIPS,
             ) {
                 let t = ["auto", "light", "dark"][i].to_string();
-                apply_theme(ui.ctx(), &t);
+                theme::apply_theme(ui.ctx(), &t);
                 self.theme = t.clone();
                 self.handle.send(Cmd::SetTheme(t));
             }
         });
-        ui.add_space(8.0);
+        ui.add_space(space::SM);
 
         card(ui, p, |ui| {
             section(ui, p, "Microphone");
@@ -2820,9 +3273,9 @@ impl VidarWindow {
                 .small()
                 .color(p.muted),
             );
-            ui.add_space(2.0);
+            ui.add_space(space::XXS);
             self.loudness_meter(ui, p, v);
-            ui.add_space(6.0);
+            ui.add_space(space::SM);
 
             section_help(ui, p, "Boost", BOOST_HELP);
             let boosts = [0.0, 5.0, 10.0, 15.0];
@@ -2837,7 +3290,7 @@ impl VidarWindow {
             ) {
                 self.handle.send(Cmd::SetBoost(boosts[i]));
             }
-            ui.add_space(4.0);
+            ui.add_space(space::XS);
             if switch_row(
                 ui,
                 p,
@@ -2848,19 +3301,15 @@ impl VidarWindow {
             ) {
                 self.handle.send(Cmd::SetAutoLevel(!v.auto_level));
             }
-            ui.add_space(4.0);
+            ui.add_space(space::XS);
             self.fine_strength(ui, p, v);
 
             let recommended = v.mic_boost_db.abs() < 0.5
                 && !v.auto_level
                 && (v.vad_threshold - 0.70).abs() < 0.005;
             if !recommended {
-                ui.add_space(2.0);
-                if ui
-                    .link(RichText::new("Reset to recommended").small())
-                    .on_hover_ui(|ui| tip_ui(ui, TIP_RESET))
-                    .clicked()
-                {
+                ui.add_space(space::XXS);
+                if link(ui, p, "Reset to recommended").tip(TIP_RESET).clicked() {
                     self.handle.send(Cmd::SetBoost(0.0));
                     if v.auto_level {
                         self.handle.send(Cmd::SetAutoLevel(false));
@@ -2869,7 +3318,7 @@ impl VidarWindow {
                 }
             }
         });
-        ui.add_space(8.0);
+        ui.add_space(space::SM);
 
         card(ui, p, |ui| {
             section_help(ui, p, "Voice tone", TONE_HELP);
@@ -2878,18 +3327,13 @@ impl VidarWindow {
                     .iter()
                     .find(|(k, _)| *k == v.eq_preset)
                     .map_or("Off", |(_, l)| *l);
-                ui.label(RichText::new(name).font(semi(13.5)).color(p.text));
+                ui.label(RichText::new(name).font(semi(ty::BODY)).color(p.text));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if secondary(ui, p, "Tune on Test")
-                        .on_hover_ui(|ui| {
-                            tip_ui(
-                                ui,
-                                (
-                                    "Tune on Test",
-                                    "Voice tone lives on the Test tab, next to your recording, so you hear each change while you make it.",
-                                ),
-                            )
-                        })
+                        .tip((
+                            "Tune on Test",
+                            "Voice tone lives on the Test tab, next to your recording, so you hear each change while you make it.",
+                        ))
                         .clicked()
                     {
                         self.tab = Tab::Test;
@@ -2897,7 +3341,7 @@ impl VidarWindow {
                 });
             });
         });
-        ui.add_space(8.0);
+        ui.add_space(space::SM);
 
         card(ui, p, |ui| {
             section(ui, p, "Apps and Windows");
@@ -2912,32 +3356,28 @@ impl VidarWindow {
                 self.handle
                     .send(Cmd::SetStartWithWindows(!v.start_with_windows));
             }
-            ui.add_space(2.0);
-            if ui
-                .link(RichText::new("How to use Vidar in a specific app").small())
-                .clicked()
-            {
+            ui.add_space(space::XXS);
+            if link(ui, p, "How to use Vidar in a specific app").clicked() {
                 self.show_help = true;
             }
         });
-        ui.add_space(8.0);
+        ui.add_space(space::SM);
 
         card(ui, p, |ui| {
             section_help(ui, p, "Virtual microphone", TIP_INSTALL);
             ui.horizontal(|ui| {
-                let (r, _) = ui.allocate_exact_size(vec2(8.0, 16.0), Sense::hover());
-                let (color, text) = if v.cable_installed {
+                let (tone, text) = if v.cable_installed {
                     (
-                        p.accent,
+                        Tone::Good,
                         format!("Installed: apps see \"{}\"", short_cable_name(v)),
                     )
                 } else {
                     (
-                        p.warn,
+                        Tone::Warn,
                         "Not installed: apps cannot get your clean voice yet".to_string(),
                     )
                 };
-                ui.painter().circle_filled(r.center(), 4.0, color);
+                tone_icon(ui, p, tone);
                 ui.label(RichText::new(text).color(p.text));
             });
             ui.label(
@@ -2945,23 +3385,14 @@ impl VidarWindow {
                     .small()
                     .color(p.muted),
             );
-            ui.add_space(2.0);
+            ui.add_space(space::XXS);
             ui.horizontal(|ui| {
                 if v.cable_installed {
-                    if secondary(ui, p, "Reinstall")
-                        .on_hover_ui(|ui| tip_ui(ui, TIP_REINSTALL))
-                        .clicked()
-                    {
+                    if secondary(ui, p, "Reinstall").tip(TIP_REINSTALL).clicked() {
                         self.handle.send(Cmd::InstallDriver);
                     }
-                    let b = egui::Button::new(RichText::new("Uninstall").color(p.danger))
-                        .fill(p.surface2)
-                        .stroke(Stroke::new(1.0, p.border))
-                        .corner_radius(9)
-                        .min_size(vec2(0.0, 32.0));
-                    if ui
-                        .add(b)
-                        .on_hover_ui(|ui| tip_ui(ui, TIP_UNINSTALL))
+                    if button(ui, p, Kind::Danger, "Uninstall", 0.0)
+                        .tip(TIP_UNINSTALL)
                         .clicked()
                     {
                         self.confirm_uninstall = true;
@@ -2971,7 +3402,7 @@ impl VidarWindow {
                 }
             });
         });
-        ui.add_space(8.0);
+        ui.add_space(space::SM);
 
         card(ui, p, |ui| {
             section(ui, p, "Advanced");
@@ -2985,77 +3416,72 @@ impl VidarWindow {
             ) {
                 self.handle.send(Cmd::SetRawCapture(!v.raw_capture));
             }
-            ui.add_space(4.0);
+            ui.add_space(space::XS);
             ui.horizontal(|ui| {
-                if secondary(ui, p, "Open logs")
-                    .on_hover_ui(|ui| tip_ui(ui, TIP_LOGS))
-                    .clicked()
-                {
+                if secondary(ui, p, "Open logs").tip(TIP_LOGS).clicked() {
                     let _ = std::process::Command::new("explorer")
                         .arg(crate::logging::log_dir())
                         .spawn();
                 }
             });
             if v.tone != Tone::Idle {
-                ui.add_space(4.0);
+                ui.add_space(space::XS);
                 self.status_line(ui, p, v);
-            }
-        });
-        ui.add_space(8.0);
-        ui.vertical_centered(|ui| {
-            if ui
-                .link(
-                    RichText::new(concat!("Vidar ", env!("CARGO_PKG_VERSION"), " · About")).small(),
-                )
-                .clicked()
-            {
-                self.tab = Tab::About;
             }
         });
     }
 
     fn about(&mut self, ui: &mut egui::Ui, p: &Pal) {
         // Header: the logo in its "on" colours, the name and the version.
-        ui.add_space(6.0);
+        ui.add_space(space::SM);
         ui.vertical_centered(|ui| {
             let (r, _) = ui.allocate_exact_size(vec2(96.0, 64.0), Sense::hover());
             draw_logo_static(ui.painter(), r.center(), 40.0);
-            ui.add_space(2.0);
-            ui.label(RichText::new("Vidar").font(semi(22.0)).color(p.text));
-            ui.add_space(2.0);
+            ui.add_space(space::XXS);
+            ui.label(RichText::new("Vidar").font(semi(ty::DISPLAY)).color(p.text));
+            ui.add_space(space::XXS);
             badge(
                 ui,
-                p.accent.gamma_multiply(0.18),
+                p.accent.gamma_multiply(alpha::TINT),
                 p.accent,
                 concat!("Version ", env!("CARGO_PKG_VERSION")),
             );
-            ui.add_space(6.0);
+            ui.add_space(space::SM);
             ui.label(RichText::new("AI noise cancellation for your microphone").color(p.muted));
         });
-        ui.add_space(14.0);
+        ui.add_space(space::LG);
 
         // VB-Audio's distribution terms ask that users can identify VB-CABLE, see where it comes
         // from and that it is donationware: https://vb-audio.com/Services/licensing.htm
         card(ui, p, |ui| {
             section(ui, p, "Virtual microphone");
-            ui.add_space(4.0);
+            ui.add_space(space::XS);
             ui.horizontal(|ui| {
-                ui.label(RichText::new("VB-CABLE").font(semi(15.0)).color(p.text));
-                badge(ui, p.blue.gamma_multiply(0.18), p.blue, "Donationware");
+                ui.label(
+                    RichText::new("VB-CABLE")
+                        .font(semi(ty::SUBTITLE))
+                        .color(p.text),
+                );
+                badge(
+                    ui,
+                    p.blue.gamma_multiply(alpha::TINT),
+                    p.blue,
+                    "Donationware",
+                );
             });
             ui.label(RichText::new("by VB-Audio Software").small().color(p.muted));
-            ui.add_space(6.0);
+            ui.add_space(space::SM);
             ui.label(
                 RichText::new(
                     "Vidar AI Microphone and Vidar Internal are VB-CABLE devices under Vidar's names. All participations are welcome.",
                 )
                 .color(p.text),
             );
-            ui.add_space(10.0);
+            ui.add_space(space::MD);
             if primary(ui, p, "Support VB-Audio", 150.0) {
                 open_url(VB_CABLE_URL);
             }
-            ui.add_space(6.0);
+            ui.add_space(space::SM);
             // The origin VB-Audio's distribution terms ask us to name, as text.
             ui.label(
                 RichText::new(format!(
@@ -3065,21 +3491,22 @@ impl VidarWindow {
                 .color(p.muted),
             );
         });
-        ui.add_space(8.0);
+        ui.add_space(space::SM);
 
         card(ui, p, |ui| {
             section(ui, p, "Noise models");
-            ui.add_space(4.0);
+            ui.add_space(space::XS);
             for (i, &(name, by, licence, url)) in CREDITS.iter().enumerate() {
                 if i > 0 {
                     let y = ui.cursor().top();
                     let x = ui.max_rect().x_range();
-                    ui.painter().hline(x, y, Stroke::new(1.0, p.border));
+                    ui.painter()
+                        .hline(x, y, Stroke::new(size::HAIRLINE, p.border));
                 }
                 credit_row(ui, p, name, by, licence, url);
             }
         });
-        ui.add_space(10.0);
+        ui.add_space(space::MD);
         ui.vertical_centered(|ui| {
             ui.label(
                 RichText::new("Vidar is MIT licensed. Other components and their licences: THIRD_PARTY_NOTICES.md")
@@ -3090,11 +3517,22 @@ impl VidarWindow {
     }
 
     fn dialogs(&mut self, ctx: &egui::Context, p: &Pal, v: &View) {
+        // Each dialog puts keyboard focus on its main button once, when it opens.
+        let done_open = matches!(v.install, InstallState::Done(_));
+        for (flag, open) in
+            self.dialog_focused
+                .iter_mut()
+                .zip([done_open, self.confirm_uninstall, self.show_help])
+        {
+            if !open {
+                *flag = false;
+            }
+        }
         if matches!(v.install, InstallState::Running | InstallState::Done(_)) {
             egui::Modal::new(egui::Id::unique("install")).frame(modal_frame(p)).show(ctx, |ui| {
-                ui.set_width(340.0);
-                ui.label(RichText::new("Virtual microphone").font(semi(16.0)).color(p.text));
-                ui.add_space(6.0);
+                ui.set_width(size::DIALOG_W);
+                ui.label(RichText::new("Virtual microphone").font(semi(ty::SUBTITLE)).color(p.text));
+                ui.add_space(space::SM);
                 match &v.install {
                     InstallState::Running => {
                         ui.horizontal(|ui| {
@@ -3124,8 +3562,13 @@ impl VidarWindow {
                     InstallState::Idle => {}
                 }
                 if matches!(v.install, InstallState::Done(_)) {
-                    ui.add_space(8.0);
-                    if primary(ui, p, "Done", 100.0) {
+                    ui.add_space(space::SM);
+                    let done = button(ui, p, Kind::Primary, "Done", 100.0);
+                    if !self.dialog_focused[0] {
+                        done.request_focus();
+                        self.dialog_focused[0] = true;
+                    }
+                    if done.clicked() {
                         self.handle.send(Cmd::DismissInstall);
                     }
                 }
@@ -3133,19 +3576,24 @@ impl VidarWindow {
         }
         if self.confirm_uninstall {
             let r = egui::Modal::new(egui::Id::unique("uninstall")).frame(modal_frame(p)).show(ctx, |ui| {
-                ui.set_width(340.0);
-                ui.label(RichText::new("Remove the virtual microphone?").font(semi(16.0)).color(p.text));
-                ui.add_space(6.0);
+                ui.set_width(size::DIALOG_W);
+                ui.label(RichText::new("Remove the virtual microphone?").font(semi(ty::SUBTITLE)).color(p.text));
+                ui.add_space(space::SM);
                 ui.label("Vidar turns off and your own microphone becomes the Windows default again. Apps can no longer get your clean voice until you install it again.");
                 ui.label(RichText::new("Windows will ask for permission and may want a restart.").small().color(p.muted));
-                ui.add_space(8.0);
+                ui.add_space(space::SM);
                 let mut answer = None;
                 ui.horizontal(|ui| {
-                    let b = egui::Button::new(RichText::new("Remove").font(semi(14.0)).color(Color32::WHITE)).fill(p.danger).corner_radius(9).min_size(vec2(100.0, 36.0));
-                    if ui.add(b).clicked() {
+                    if button(ui, p, Kind::DangerSolid, "Remove", 100.0).clicked() {
                         answer = Some(true);
                     }
-                    if secondary(ui, p, "Keep it").clicked() {
+                    // A destructive question starts on the safe answer.
+                    let keep = button(ui, p, Kind::Secondary, "Keep it", 0.0);
+                    if !self.dialog_focused[1] {
+                        keep.request_focus();
+                        self.dialog_focused[1] = true;
+                    }
+                    if keep.clicked() {
                         answer = Some(false);
                     }
                 });
@@ -3163,16 +3611,21 @@ impl VidarWindow {
         }
         if self.show_help {
             let r = egui::Modal::new(egui::Id::unique("help")).frame(modal_frame(p)).show(ctx, |ui| {
-                ui.set_width(340.0);
-                ui.label(RichText::new("Using Vidar in apps").font(semi(16.0)).color(p.text));
-                ui.add_space(6.0);
+                ui.set_width(size::DIALOG_W);
+                ui.label(RichText::new("Using Vidar in apps").font(semi(ty::SUBTITLE)).color(p.text));
+                ui.add_space(space::SM);
                 ui.label("With \"Use Vidar AI Microphone as the default\" on, apps that use the Windows default microphone switch automatically.");
-                ui.add_space(4.0);
+                ui.add_space(space::XS);
                 ui.label(RichText::new("If an app keeps its old microphone:").color(p.text));
                 ui.label(RichText::new(format!("open its audio settings and choose \"{}\".", short_cable_name(v))).color(p.accent));
                 ui.label(RichText::new("Keep your normal speakers or headphones for playback.").small().color(p.muted));
-                ui.add_space(8.0);
-                primary(ui, p, "Got it", 100.0)
+                ui.add_space(space::SM);
+                let got_it = button(ui, p, Kind::Primary, "Got it", 100.0);
+                if !self.dialog_focused[2] {
+                    got_it.request_focus();
+                    self.dialog_focused[2] = true;
+                }
+                got_it.clicked()
             });
             if r.inner || r.should_close() {
                 self.show_help = false;
@@ -3212,7 +3665,7 @@ fn credit_row(ui: &mut egui::Ui, p: &Pal, name: &str, by: &str, licence: &str, u
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 1.0;
-                    ui.label(RichText::new(name).font(semi(13.5)).color(p.text));
+                    ui.label(RichText::new(name).font(semi(ty::BODY)).color(p.text));
                     ui.label(RichText::new(by).small().color(p.muted));
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -3225,19 +3678,30 @@ fn credit_row(ui: &mut egui::Ui, p: &Pal, name: &str, by: &str, licence: &str, u
         ui.scope_id().with(("credit", name)),
         Sense::click(),
     );
-    let hover = ui
-        .ctx()
-        .animate_bool_with_time(resp.id, resp.hovered(), 0.1);
+    let hover =
+        ui.ctx()
+            .animate_bool_with_time(resp.id, resp.hovered(), anim(ui.ctx(), motion::FAST));
+    focus_ring(ui, p, &resp, radius::MD);
     if hover > 0.0 {
         ui.painter().set(
             bg,
-            egui::Shape::rect_filled(inner.response.rect, 8.0, p.surface2.gamma_multiply(hover)),
+            egui::Shape::rect_filled(
+                inner.response.rect,
+                radius::MD,
+                p.surface2.gamma_multiply(hover),
+            ),
         );
     }
     if resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    if resp.on_hover_text(url).clicked() {
+    if resp
+        .tip_with(|ui| {
+            ui.set_max_width(size::TOOLTIP_W);
+            ui.label(RichText::new(url).size(ty::CAPTION));
+        })
+        .clicked()
+    {
         open_url(url);
     }
 }
@@ -3274,6 +3738,7 @@ impl eframe::App for VidarWindow {
             self.titlebar_dark = Some(dark);
             paint_title_bar(frame, if dark { &DARK } else { &LIGHT }, dark);
         }
+        theme::track_input_modality(ctx);
         if let Ok(rx) = self.ui_rx.lock() {
             while let Ok(cmd) = rx.try_recv() {
                 match cmd {
@@ -3308,15 +3773,15 @@ impl eframe::App for VidarWindow {
         let p = pal(ui);
         egui::Frame::new()
             .fill(p.bg)
-            .inner_margin(egui::Margin::symmetric(16, 12))
+            .inner_margin(egui::Margin::symmetric(space::LG as i8, space::MD as i8))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.set_min_height(ui.available_height());
                 self.header(ui, &p, &v);
-                ui.add_space(8.0);
+                ui.add_space(space::SM);
                 if self.tab == Tab::Test {
                     self.test_top(ui, &p, &v);
-                    ui.add_space(8.0);
+                    ui.add_space(space::SM);
                 }
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
@@ -3327,7 +3792,7 @@ impl eframe::App for VidarWindow {
                             Tab::Settings => self.settings(ui, &p, &v),
                             Tab::About => self.about(ui, &p),
                         }
-                        ui.add_space(8.0);
+                        ui.add_space(space::SM);
                     });
             });
         let ctx = ui.ctx().clone();

@@ -4,6 +4,7 @@
 
 mod autostart;
 mod logging;
+mod theme;
 mod tray;
 mod ui;
 mod worker;
