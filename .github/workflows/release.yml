@@ -4,9 +4,12 @@ name: Release
 # release 0.3.0` prepares both) to build the Windows packages and installers for x64 and
 # ARM64, zip the packages and publish a GitHub release.
 #
-# The app's updater looks for `vidar-<version>-setup.exe` (x64) or
-# `vidar-<version>-arm64-setup.exe` and `<that>.sha256` on the latest release, so keep
-# those names. Tags with a suffix (`v0.3.0-rc.1`) are published as pre-releases.
+# Release files, for <arch> = x64 and arm64:
+#   vidar-<version>-<arch>-setup.exe     + .sha256   the app's updater looks for these
+#   vidar-<version>-<arch>-portable.zip  + .sha256
+#   vidar-<version>-setup.exe            + .sha256   x64 again, under the name the updater in
+#                                                    0.2.x looks for; drop once 0.2 is gone
+# Tags with a suffix (`v0.3.0-rc.1`) are published as pre-releases.
 on:
   push:
     tags: ["v*"]
@@ -114,13 +117,22 @@ jobs:
         env:
           ARCH: ${{ matrix.arch }}
         run: |
-          $name = "vidar-$env:VERSION-windows-$env:ARCH"
-          $setup = if ($env:ARCH -eq 'x64') { "vidar-$env:VERSION-setup.exe" } else { "vidar-$env:VERSION-$env:ARCH-setup.exe" }
+          function Write-Sum($file) {
+            $hash = (Get-FileHash "out/$file" -Algorithm SHA256).Hash.ToLower()
+            "$hash  $file" | Out-File -Encoding ascii "out/$file.sha256"
+          }
+          $zip = "vidar-$env:VERSION-$env:ARCH-portable.zip"
+          $setup = "vidar-$env:VERSION-$env:ARCH-setup.exe"
           New-Item -ItemType Directory -Force out | Out-Null
-          Compress-Archive -Path dist/vidar -DestinationPath "out/$name.zip" -CompressionLevel Optimal
-          $hash = (Get-FileHash "out/$name.zip" -Algorithm SHA256).Hash.ToLower()
-          "$hash  $name.zip" | Out-File -Encoding ascii "out/$name.zip.sha256"
+          Compress-Archive -Path dist/vidar -DestinationPath "out/$zip" -CompressionLevel Optimal
+          Write-Sum $zip
           Copy-Item "dist/$setup", "dist/$setup.sha256" out/
+          # The updater in 0.2.x only knows this name for the x64 setup.
+          if ($env:ARCH -eq 'x64') {
+            $legacy = "vidar-$env:VERSION-setup.exe"
+            Copy-Item "dist/$setup" "out/$legacy"
+            Write-Sum $legacy
+          }
           Get-ChildItem out
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -171,8 +183,10 @@ jobs:
 
           | PC | Setup | Portable |
           |---|---|---|
-          | Most Windows PCs (Intel, AMD) | `vidar-*-setup.exe` | `vidar-*-windows-x64.zip` |
-          | Windows 11 on ARM (Snapdragon) | `vidar-*-arm64-setup.exe` | `vidar-*-windows-arm64.zip` |
+          | Most Windows PCs (Intel, AMD) | `vidar-*-x64-setup.exe` | `vidar-*-x64-portable.zip` |
+          | Windows 11 on ARM (Snapdragon) | `vidar-*-arm64-setup.exe` | `vidar-*-arm64-portable.zip` |
+
+          (`vidar-*-setup.exe` is the x64 setup again, for automatic updates from Vidar 0.2.)
 
           **Portable:** extract the zip anywhere and run `vidar.exe`. On first start Vidar offers
           to install the virtual microphone.

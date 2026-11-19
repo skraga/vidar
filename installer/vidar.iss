@@ -19,7 +19,7 @@
   #define Arch "x64"
 #endif
 #ifndef OutputBase
-  #define OutputBase "vidar-" + AppVersion + "-setup"
+  #define OutputBase "vidar-" + AppVersion + "-" + Arch + "-setup"
 #endif
 ; Oldest Visual C++ runtime onnxruntime.dll 1.32 is known to work with (14.40, VS 2022 17.10).
 #define VCRedistMinMinor 40

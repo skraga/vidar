@@ -34,8 +34,8 @@ page, download either:
 
 | | Intel / AMD | ARM64 |
 |---|---|---|
-| **Setup** (recommended) | `vidar-<version>-setup.exe` | `vidar-<version>-arm64-setup.exe` |
-| **Portable** | `vidar-<version>-windows-x64.zip` | `vidar-<version>-windows-arm64.zip` |
+| **Setup** (recommended) | `vidar-<version>-x64-setup.exe` | `vidar-<version>-arm64-setup.exe` |
+| **Portable** | `vidar-<version>-x64-portable.zip` | `vidar-<version>-arm64-portable.zip` |
 
 - **Setup** installs Vidar and the virtual microphone with one permission prompt, plus the
   Microsoft Visual C++ Runtime if your PC does not have it yet (downloaded from Microsoft).
@@ -52,7 +52,7 @@ the same folder you can copy to another PC or zip up, run:
 
 ```
 cargo xtask dist         # dist\vidar
-cargo xtask installer    # dist\vidar, then dist\vidar-<version>-setup.exe
+cargo xtask installer    # dist\vidar, then dist\vidar-<version>-<x64|arm64>-setup.exe
 ```
 
 This fetches the models and ONNX Runtime, builds the release binaries and puts everything Vidar

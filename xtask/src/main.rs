@@ -47,13 +47,10 @@ fn arch() -> &'static str {
     }
 }
 
-/// Release file names. x64 keeps the names used before ARM64 builds existed, which the
-/// updater in 0.2 looks for.
+/// The setup's file name without `.exe`: `vidar-<version>-<x64|arm64>-setup`. The portable
+/// zip is `vidar-<version>-<arch>-portable.zip` (release workflow).
 fn setup_base_name(version: &str) -> String {
-    match arch() {
-        "x64" => format!("vidar-{version}-setup"),
-        a => format!("vidar-{version}-{a}-setup"),
-    }
+    format!("vidar-{version}-{}-setup", arch())
 }
 
 fn workspace_root() -> PathBuf {
@@ -385,7 +382,7 @@ fn iscc() -> PathBuf {
 }
 
 /// `dist`, then the setup program from installer\vidar.iss for this machine's architecture:
-/// `dist\vidar-<version>-setup.exe` (x64) or `dist\vidar-<version>-arm64-setup.exe`, plus
+/// `dist\vidar-<version>-x64-setup.exe` or `dist\vidar-<version>-arm64-setup.exe`, plus
 /// `<that>.sha256`, which the app's updater checks.
 /// Needs Inno Setup 6 (`winget install JRSoftware.InnoSetup`).
 fn installer(all_models: bool) -> Result<()> {

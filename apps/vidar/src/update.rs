@@ -63,16 +63,18 @@ fn github_url(url: &str) -> bool {
         .any(|p| url.starts_with(p))
 }
 
-/// Setup file names to look for, best first. An ARM64 PC prefers the native ARM64 setup
-/// (also when this copy is the x64 build running emulated) and falls back to the x64 one,
-/// which Windows 11 on ARM runs too.
+/// Setup file names to look for, best first: `vidar-<version>-<x64|arm64>-setup.exe`, then
+/// `vidar-<version>-setup.exe`, the x64 name used up to 0.3.0. An ARM64 PC prefers the
+/// native ARM64 setup (also when this copy is the x64 build running emulated) and falls back
+/// to x64, which Windows 11 on ARM runs too.
 pub fn setup_names(version: &str, arm64: bool) -> Vec<String> {
-    let x64 = format!("vidar-{version}-setup.exe");
+    let mut names = Vec::with_capacity(3);
     if arm64 {
-        vec![format!("vidar-{version}-arm64-setup.exe"), x64]
-    } else {
-        vec![x64]
+        names.push(format!("vidar-{version}-arm64-setup.exe"));
     }
+    names.push(format!("vidar-{version}-x64-setup.exe"));
+    names.push(format!("vidar-{version}-setup.exe"));
+    names
 }
 
 /// Read GitHub's `releases/latest` reply. `arm64`: the PC is ARM64.
@@ -272,36 +274,72 @@ mod tests {
         assert_eq!(r.setup.unwrap().name, "vidar-0.2.0-setup.exe");
     }
 
+    fn release_with(version: &str, names: &[&str]) -> String {
+        let assets: Vec<String> = names
+            .iter()
+            .map(|n| {
+                format!(
+                    r#"{{"name": "{n}", "size": 1, "browser_download_url": "https://github.com/skraga/vidar/releases/download/v{version}/{n}"}}"#
+                )
+            })
+            .collect();
+        format!(
+            r#"{{"tag_name": "v{version}", "assets": [{}]}}"#,
+            assets.join(",")
+        )
+    }
+
+    /// Each PC gets its own architecture's setup by the current names, also when the
+    /// release still carries the old x64 name for 0.2's updater.
     #[test]
-    fn arm64_pcs_get_the_arm64_setup() {
-        let asset = |n: &str| {
-            format!(
-                r#"{{"name": "{n}", "size": 1, "browser_download_url": "https://github.com/skraga/vidar/releases/download/v0.3.0/{n}"}}"#
-            )
-        };
-        let names = [
-            "vidar-0.3.0-setup.exe",
-            "vidar-0.3.0-setup.exe.sha256",
-            "vidar-0.3.0-arm64-setup.exe",
-            "vidar-0.3.0-arm64-setup.exe.sha256",
-        ];
-        let json = format!(
-            r#"{{"tag_name": "v0.3.0", "assets": [{}]}}"#,
-            names.map(asset).join(",")
+    fn each_pc_gets_its_architectures_setup() {
+        let json = release_with(
+            "0.3.1",
+            &[
+                "vidar-0.3.1-x64-portable.zip",
+                "vidar-0.3.1-x64-setup.exe",
+                "vidar-0.3.1-x64-setup.exe.sha256",
+                "vidar-0.3.1-arm64-setup.exe",
+                "vidar-0.3.1-arm64-setup.exe.sha256",
+                "vidar-0.3.1-setup.exe",
+                "vidar-0.3.1-setup.exe.sha256",
+            ],
+        );
+        let arm = parse_release(&json, true).unwrap();
+        assert_eq!(arm.setup.unwrap().name, "vidar-0.3.1-arm64-setup.exe");
+        assert_eq!(
+            arm.setup_sha256.unwrap().name,
+            "vidar-0.3.1-arm64-setup.exe.sha256"
+        );
+        let x64 = parse_release(&json, false).unwrap();
+        assert_eq!(x64.setup.unwrap().name, "vidar-0.3.1-x64-setup.exe");
+    }
+
+    /// Releases up to 0.3.0 named the x64 setup without its architecture.
+    #[test]
+    fn old_release_names_still_work() {
+        let json = release_with(
+            "0.3.0",
+            &[
+                "vidar-0.3.0-setup.exe",
+                "vidar-0.3.0-setup.exe.sha256",
+                "vidar-0.3.0-arm64-setup.exe",
+                "vidar-0.3.0-arm64-setup.exe.sha256",
+            ],
         );
         let arm = parse_release(&json, true).unwrap();
         assert_eq!(arm.setup.unwrap().name, "vidar-0.3.0-arm64-setup.exe");
-        assert_eq!(
-            arm.setup_sha256.unwrap().name,
-            "vidar-0.3.0-arm64-setup.exe.sha256"
-        );
         let x64 = parse_release(&json, false).unwrap();
         assert_eq!(x64.setup.unwrap().name, "vidar-0.3.0-setup.exe");
 
-        // A setup without its checksum is never chosen.
-        let json = format!(
-            r#"{{"tag_name": "v0.3.0", "assets": [{}]}}"#,
-            [names[0], names[1], names[2]].map(asset).join(",")
+        // A setup without its checksum is never chosen: the ARM64 PC falls back to x64.
+        let json = release_with(
+            "0.3.0",
+            &[
+                "vidar-0.3.0-setup.exe",
+                "vidar-0.3.0-setup.exe.sha256",
+                "vidar-0.3.0-arm64-setup.exe",
+            ],
         );
         assert_eq!(
             parse_release(&json, true).unwrap().setup.unwrap().name,
