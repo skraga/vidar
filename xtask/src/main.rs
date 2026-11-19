@@ -3,6 +3,7 @@
 //!   fetch         RNNoise weights + default DPDFNet model, hash-checked
 //!   fetch --all   also the larger dpdfnet8 model
 //!   dist          release build + everything it needs, licences included, in dist\vidar
+//!   installer     dist, then dist\vidar-<version>-setup.exe (Inno Setup 6) and its .sha256
 
 use std::fs;
 use std::io::Read;
@@ -189,17 +190,22 @@ fn dist(all_models: bool) -> Result<()> {
 
     // Licence texts of every Rust dependency (about.toml, about.hbs). Runs before the long
     // build so a missing cargo-about fails fast.
+    // Written to a file (-o): cargo-about refuses a redirected stdout under PowerShell.
+    let about_file = root.join("target").join("THIRD_PARTY_LICENSES.html");
+    let _ = fs::remove_file(&about_file);
     let about = std::process::Command::new(&cargo)
         .current_dir(&root)
-        .args(["about", "generate", "--workspace", "about.hbs"])
-        .stderr(std::process::Stdio::inherit())
-        .output()?;
-    if !about.status.success() || about.stdout.is_empty() {
+        .args(["about", "generate", "--workspace", "-o"])
+        .arg(&about_file)
+        .arg("about.hbs")
+        .status()?;
+    let crate_licenses = fs::read(&about_file).unwrap_or_default();
+    if !about.success() || crate_licenses.is_empty() {
         return Err(
-            "cargo about failed; install it with `cargo install cargo-about --locked`".into(),
+            "cargo about failed; install it with `cargo install cargo-about --locked --features cli`"
+                .into(),
         );
     }
-    let crate_licenses = about.stdout;
 
     let status = std::process::Command::new(&cargo)
         .current_dir(&root)
@@ -302,19 +308,114 @@ fn dist(all_models: bool) -> Result<()> {
     Ok(())
 }
 
+/// `[workspace.package] version` from the root Cargo.toml (xtask's own version is 0.0.0).
+fn workspace_version() -> Result<String> {
+    let toml = fs::read_to_string(workspace_root().join("Cargo.toml"))?;
+    let mut in_package = false;
+    for line in toml.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_package = line == "[workspace.package]";
+        } else if in_package {
+            if let Some(v) = line.strip_prefix("version") {
+                let v = v
+                    .trim_start()
+                    .trim_start_matches('=')
+                    .trim()
+                    .trim_matches('"');
+                if !v.is_empty() {
+                    return Ok(v.to_string());
+                }
+            }
+        }
+    }
+    Err("no version in [workspace.package] of Cargo.toml".into())
+}
+
+/// The Inno Setup 6 compiler: `ISCC` if set, the usual install folders, else PATH.
+fn iscc() -> PathBuf {
+    if let Some(p) = std::env::var_os("ISCC") {
+        return PathBuf::from(p);
+    }
+    let candidates = [
+        std::env::var_os("ProgramFiles(x86)").map(PathBuf::from),
+        std::env::var_os("ProgramFiles").map(PathBuf::from),
+        std::env::var_os("LOCALAPPDATA").map(|p| PathBuf::from(p).join("Programs")),
+    ];
+    candidates
+        .into_iter()
+        .flatten()
+        .map(|d| d.join("Inno Setup 6").join("ISCC.exe"))
+        .find(|p| p.is_file())
+        .unwrap_or_else(|| PathBuf::from("ISCC"))
+}
+
+/// `dist`, then the setup program from installer\vidar.iss:
+/// `dist\vidar-<version>-setup.exe` plus `<that>.sha256`, which the app's updater checks.
+/// Needs Inno Setup 6 (`winget install JRSoftware.InnoSetup`).
+fn installer(all_models: bool) -> Result<()> {
+    dist(all_models)?;
+    let root = workspace_root();
+    let version = workspace_version()?;
+    let out = root.join("dist");
+    let source = out.join("vidar");
+
+    // The setup's own icon, from the same drawing as the program's.
+    let icon = out.join("vidar.ico");
+    let status = std::process::Command::new(source.join("vidar.exe"))
+        .arg("--write-icon")
+        .arg(&icon)
+        .status()?;
+    if !status.success() || !icon.is_file() {
+        return Err("vidar.exe --write-icon failed".into());
+    }
+
+    let compiler = iscc();
+    println!("[..] {}", compiler.display());
+    let status = std::process::Command::new(&compiler)
+        .current_dir(root.join("installer"))
+        .arg("/Q")
+        .arg(format!("/DAppVersion={version}"))
+        .arg(format!("/DSourceDir={}", source.display()))
+        .arg(format!("/DOutputDir={}", out.display()))
+        .arg(format!("/DIconFile={}", icon.display()))
+        .arg("vidar.iss")
+        .status()
+        .map_err(|e| {
+            format!(
+                "cannot run {} ({e}); install Inno Setup 6 (winget install JRSoftware.InnoSetup) or set ISCC",
+                compiler.display()
+            )
+        })?;
+    if !status.success() {
+        return Err("Inno Setup failed".into());
+    }
+
+    let name = format!("vidar-{version}-setup.exe");
+    let setup = out.join(&name);
+    let hash = sha256_hex(&fs::read(&setup)?);
+    fs::write(
+        out.join(format!("{name}.sha256")),
+        format!("{hash}  {name}\n"),
+    )?;
+    println!("[OK] {}", setup.display());
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    let all = args.iter().any(|a| a == "--all");
     match args.first().map(String::as_str) {
         Some("fetch") => {
-            let all = args.iter().any(|a| a == "--all");
             fetch_rnnoise()?;
             fetch_onnxruntime()?;
             fetch_dpdfnet(all)?;
             Ok(())
         }
-        Some("dist") => dist(args.iter().any(|a| a == "--all")),
+        Some("dist") => dist(all),
+        Some("installer") => installer(all),
         _ => {
-            eprintln!("usage: cargo xtask fetch [--all] | dist [--all]");
+            eprintln!("usage: cargo xtask fetch [--all] | dist [--all] | installer [--all]");
             std::process::exit(2);
         }
     }

@@ -153,6 +153,33 @@ struct TestClip {
     variants: Vec<Vec<f32>>,
 }
 
+/// What the update check is doing.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum UpdatePhase {
+    #[default]
+    Idle,
+    Checking,
+    /// Downloading the installer, 0..1.
+    Downloading(f64),
+    /// The installer is starting (UAC prompt); Vidar quits once it runs.
+    Launching,
+}
+
+/// Update state for the window.
+#[derive(Debug, Clone, Default)]
+pub struct UpdateView {
+    pub phase: UpdatePhase,
+    /// Check automatically about once a day.
+    pub enabled: bool,
+    /// Installed by setup (can update itself) rather than the portable zip.
+    pub installed: bool,
+    /// A newer version and its release page.
+    pub available: Option<(String, String)>,
+    /// Set after a check the user asked for found nothing newer.
+    pub up_to_date: bool,
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstallState {
     Idle,
@@ -193,6 +220,7 @@ pub struct View {
     pub uninstalling: bool,
     /// Ask the window to show the driver prompt (first run without the cable).
     pub prompt_install: bool,
+    pub update: UpdateView,
 }
 
 pub enum Cmd {
@@ -234,6 +262,19 @@ pub enum Cmd {
     UninstallDriver,
     DismissInstall,
     Rescan,
+    /// Look for a newer release now (the user asked: report "up to date" and errors too).
+    CheckUpdates,
+    /// Turn the daily automatic check on or off.
+    SetCheckUpdates(bool),
+    /// Download, verify and run the newer release's installer (installed copies only).
+    InstallUpdate,
+    /// Internal: a check finished. `manual` = the user asked for it.
+    UpdateChecked {
+        result: Result<crate::update::Release, String>,
+        manual: bool,
+    },
+    /// Internal: the installer is running; quit so it can replace the files.
+    UpdateLaunched,
     /// Stop, restore the mic, and end the worker.
     Exit,
 }
@@ -280,7 +321,22 @@ struct Core {
     /// Voice tone for test playback: applied live, so tone changes are heard while playing.
     test_eq: Arc<Mutex<[f64; vidar_dsp::EQ_BANDS]>>,
     tx: Sender<Cmd>,
+    /// Tells the window and tray to quit (after an update's installer has started).
+    ui_tx: Sender<crate::UiCmd>,
+    /// The newer release found by the last check.
+    latest: Option<crate::update::Release>,
+    /// When the next automatic update check is due.
+    next_update_check: Option<Instant>,
 }
+
+/// Seconds since 1970, for `last_update_check`.
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+const UPDATE_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
 fn models_dirs() -> Vec<PathBuf> {
     let mut v = Vec::new();
@@ -956,6 +1012,117 @@ impl Core {
         self.status(format!("Now using {} - {}", o.mode, o.strength), Tone::Good);
     }
 
+    /// When the next automatic check is due: a day after the last one, but not in the first
+    /// half minute after start, so starting with Windows stays quick.
+    fn schedule_update_check(&mut self) {
+        self.next_update_check = self.cfg.check_updates.then(|| {
+            let since = unix_now().saturating_sub(self.cfg.last_update_check);
+            let wait = UPDATE_INTERVAL.saturating_sub(Duration::from_secs(since));
+            Instant::now() + wait.max(Duration::from_secs(30))
+        });
+    }
+
+    /// Look for a newer release on a background thread; the result comes back as a command.
+    fn check_updates(&mut self, manual: bool) {
+        if matches!(
+            self.view.lock().map(|v| v.update.phase),
+            Ok(UpdatePhase::Checking | UpdatePhase::Downloading(_) | UpdatePhase::Launching)
+        ) {
+            return;
+        }
+        self.cfg.last_update_check = unix_now();
+        self.save_later();
+        self.schedule_update_check();
+        self.publish(|v| {
+            v.update.phase = UpdatePhase::Checking;
+            v.update.error = None;
+            v.update.up_to_date = false;
+        });
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let result = crate::update::fetch_latest();
+            let _ = tx.send(Cmd::UpdateChecked { result, manual });
+        });
+    }
+
+    fn update_checked(&mut self, result: Result<crate::update::Release, String>, manual: bool) {
+        let current = env!("CARGO_PKG_VERSION");
+        match result {
+            Ok(rel) if crate::update::is_newer(&rel.version, current) => {
+                info!("update available: {} (running {current})", rel.version);
+                let found = (rel.version.clone(), rel.page_url.clone());
+                self.latest = Some(rel);
+                self.publish(|v| {
+                    v.update.phase = UpdatePhase::Idle;
+                    v.update.available = Some(found);
+                });
+            }
+            Ok(_) => self.publish(|v| {
+                v.update.phase = UpdatePhase::Idle;
+                v.update.up_to_date = manual;
+            }),
+            Err(e) => {
+                warn!("update check failed: {e}");
+                // Automatic checks fail quietly (offline is normal); asked-for ones say why.
+                self.publish(|v| {
+                    v.update.phase = UpdatePhase::Idle;
+                    v.update.error = manual.then_some(e);
+                });
+            }
+        }
+    }
+
+    /// Download and verify the newer release's installer, then run it. Vidar quits once it
+    /// has started (`UpdateLaunched`); declining the UAC prompt leaves everything as it was.
+    fn install_update(&mut self) {
+        let Some(rel) = self.latest.clone() else {
+            return;
+        };
+        if !crate::update::installed() {
+            return;
+        }
+        let (view, repaint, tx) = (self.view.clone(), self.repaint.clone(), self.tx.clone());
+        let notify = move |f: &dyn Fn(&mut UpdateView)| {
+            if let Ok(mut v) = view.lock() {
+                f(&mut v.update);
+            }
+            if let Ok(c) = repaint.lock() {
+                if let Some(c) = c.as_ref() {
+                    c.request_repaint();
+                }
+            }
+        };
+        notify(&|u| {
+            u.phase = UpdatePhase::Downloading(0.0);
+            u.error = None;
+        });
+        std::thread::spawn(move || {
+            let mut last = 0.0;
+            let downloaded = crate::update::download_setup(&rel, &mut |p| {
+                if p - last >= 0.01 || p >= 1.0 {
+                    last = p;
+                    notify(&|u| u.phase = UpdatePhase::Downloading(p));
+                }
+            });
+            let launched = downloaded.and_then(|path| {
+                notify(&|u| u.phase = UpdatePhase::Launching);
+                crate::update::launch_setup(&path)
+            });
+            match launched {
+                Ok(()) => {
+                    let _ = tx.send(Cmd::UpdateLaunched);
+                }
+                Err(e) => {
+                    warn!("update failed: {e}");
+                    notify(&|u| {
+                        u.phase = UpdatePhase::Idle;
+                        u.error = Some(e.clone());
+                    });
+                }
+            }
+        });
+    }
+
     /// Install (or with `uninstall`, remove) the virtual cable through the CLI, elevated.
     fn install_driver(&mut self, uninstall: bool) {
         let cli = std::env::current_exe()
@@ -1184,6 +1351,24 @@ impl Core {
                     self.status(s, t);
                 }
             }
+            Cmd::CheckUpdates => self.check_updates(true),
+            Cmd::SetCheckUpdates(on) => {
+                self.cfg.check_updates = on;
+                self.save_now();
+                self.schedule_update_check();
+                self.publish(|v| v.update.enabled = on);
+            }
+            Cmd::InstallUpdate => self.install_update(),
+            Cmd::UpdateChecked { result, manual } => self.update_checked(result, manual),
+            Cmd::UpdateLaunched => {
+                info!("update installer started; quitting so it can replace the files");
+                let _ = self.ui_tx.send(crate::UiCmd::Quit);
+                if let Ok(c) = self.repaint.lock() {
+                    if let Some(c) = c.as_ref() {
+                        c.request_repaint();
+                    }
+                }
+            }
             Cmd::Exit => {
                 self.test_cancel.store(true, Relaxed);
                 self.stop(true);
@@ -1197,8 +1382,13 @@ impl Core {
     }
 }
 
-/// Start the worker. `cfg_path`/`cfg` come from `main` (already crash-audited).
-pub fn spawn(cfg_path: PathBuf, cfg: Config) -> (Handle, std::thread::JoinHandle<()>) {
+/// Start the worker. `cfg_path`/`cfg` come from `main` (already crash-audited); `ui_tx`
+/// reaches the window and tray (the worker uses it to quit for an update).
+pub fn spawn(
+    cfg_path: PathBuf,
+    cfg: Config,
+    ui_tx: Sender<crate::UiCmd>,
+) -> (Handle, std::thread::JoinHandle<()>) {
     let (tx, rx) = std::sync::mpsc::channel();
     let view = Arc::new(Mutex::new(View {
         state: RunState::Stopped,
@@ -1226,6 +1416,11 @@ pub fn spawn(cfg_path: PathBuf, cfg: Config) -> (Handle, std::thread::JoinHandle
         install: InstallState::Idle,
         uninstalling: false,
         prompt_install: false,
+        update: UpdateView {
+            enabled: cfg.check_updates,
+            installed: crate::update::installed(),
+            ..UpdateView::default()
+        },
     }));
     let repaint = Arc::new(Mutex::new(None));
     let handle = Handle {
@@ -1235,7 +1430,7 @@ pub fn spawn(cfg_path: PathBuf, cfg: Config) -> (Handle, std::thread::JoinHandle
     };
     let join = std::thread::Builder::new()
         .name("vidar-worker".into())
-        .spawn(move || run(cfg_path, cfg, view, repaint, tx, rx))
+        .spawn(move || run(cfg_path, cfg, view, repaint, tx, rx, ui_tx))
         .expect("worker thread");
     (handle, join)
 }
@@ -1247,6 +1442,7 @@ fn run(
     repaint: Arc<Mutex<Option<eframe::egui::Context>>>,
     tx: Sender<Cmd>,
     rx: Receiver<Cmd>,
+    ui_tx: Sender<crate::UiCmd>,
 ) {
     vidar_win::sys::com_init();
     let route = RouteState {
@@ -1272,7 +1468,11 @@ fn run(
         clip: Arc::new(Mutex::new(None)),
         test_eq: Arc::new(Mutex::new(cfg_eq)),
         tx,
+        ui_tx,
+        latest: None,
+        next_update_check: None,
     };
+    core.schedule_update_check();
     core.refresh_devices();
     core.repair_names_on_start();
     let (s, t) = core.idle_status();
@@ -1315,6 +1515,9 @@ fn run(
             .is_some_and(|t| t.elapsed() > Duration::from_millis(500))
         {
             core.save_now();
+        }
+        if core.next_update_check.is_some_and(|t| Instant::now() >= t) {
+            core.check_updates(false);
         }
         core.check_health();
     }

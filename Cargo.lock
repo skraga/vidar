@@ -3392,12 +3392,15 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vidar"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "eframe",
  "log",
  "raw-window-handle",
+ "serde_json",
+ "sha2",
  "tray-icon",
+ "ureq",
  "vidar-audio",
  "vidar-brand",
  "vidar-config",
@@ -3410,7 +3413,7 @@ dependencies = [
 
 [[package]]
 name = "vidar-audio"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rtrb",
  "vidar-config",
@@ -3421,14 +3424,14 @@ dependencies = [
 
 [[package]]
 name = "vidar-brand"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "png",
 ]
 
 [[package]]
 name = "vidar-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "hound",
@@ -3447,7 +3450,7 @@ dependencies = [
 
 [[package]]
 name = "vidar-config"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -3458,7 +3461,7 @@ dependencies = [
 
 [[package]]
 name = "vidar-denoise"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "cc",
  "hound",
@@ -3470,11 +3473,11 @@ dependencies = [
 
 [[package]]
 name = "vidar-dsp"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "vidar-win"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "thiserror 2.0.21",
  "windows",

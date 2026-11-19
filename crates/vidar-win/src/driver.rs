@@ -86,6 +86,38 @@ pub fn run_maybe_elevated(
     }
 }
 
+/// Start `exe args` elevated (one UAC prompt) and return once it is running, without waiting
+/// for it. Fails if the user declines the prompt.
+pub fn launch_elevated(exe: &Path, args: &str) -> Result<(), Error> {
+    let verb = HSTRING::from("runas");
+    let file = HSTRING::from(exe.as_os_str());
+    let params = HSTRING::from(args);
+    let directory = HSTRING::from(exe.parent().unwrap_or(Path::new(".")).as_os_str());
+    let mut info = SHELLEXECUTEINFOW {
+        cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+        fMask: SEE_MASK_NOCLOSEPROCESS,
+        lpVerb: PCWSTR(verb.as_ptr()),
+        lpFile: PCWSTR(file.as_ptr()),
+        lpParameters: PCWSTR(params.as_ptr()),
+        lpDirectory: PCWSTR(directory.as_ptr()),
+        nShow: windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL.0,
+        ..Default::default()
+    };
+    // SAFETY: all strings outlive the call; the process handle is closed below.
+    unsafe {
+        ShellExecuteExW(&mut info).map_err(|e| {
+            Error::Other(format!(
+                "could not start {}: {e} (UAC declined?)",
+                exe.display()
+            ))
+        })?;
+        if !info.hProcess.is_invalid() {
+            let _ = CloseHandle(info.hProcess);
+        }
+    }
+    Ok(())
+}
+
 /// What `install` did.
 #[derive(Debug, Default)]
 pub struct InstallReport {

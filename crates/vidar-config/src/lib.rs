@@ -86,6 +86,12 @@ pub struct Config {
     /// Window theme: "auto" (follow Windows), "light" or "dark".
     pub ui_theme: String,
 
+    /// Look for a newer release on GitHub about once a day. The only network access Vidar
+    /// makes; "Check now" in Settings works either way.
+    pub check_updates: bool,
+    /// When the last automatic check ran (seconds since 1970), so restarts do not re-check.
+    pub last_update_check: u64,
+
     /// Keys this version does not know about, kept as-is.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -110,6 +116,8 @@ impl Default for Config {
             raw_capture: false,
             start_with_windows: false,
             ui_theme: "auto".into(),
+            check_updates: true,
+            last_update_check: 0,
             extra: Map::new(),
         }
     }

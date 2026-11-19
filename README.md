@@ -28,21 +28,29 @@ Your mic → Vidar (filter → AI model → cleanup) → Vidar AI Microphone →
 
 ## Install
 
-Vidar needs Windows 10 (version 1903 or later) or Windows 11 on a 64-bit x86 PC. Download
-`vidar-<version>-windows-x64.zip` from the [Releases](../../releases) page, extract it anywhere
-and run `vidar.exe`.
+Vidar needs Windows 10 (version 1903 or later) or Windows 11 on a 64-bit x86 PC. From the
+[Releases](../../releases) page, download either:
+
+- **`vidar-<version>-setup.exe`** (recommended). It installs Vidar and the virtual microphone
+  with one permission prompt, adds Vidar to the Start menu and to *Installed apps*, and
+  later versions install from inside the app.
+- **`vidar-<version>-windows-x64.zip`** (portable). Extract it anywhere and run `vidar.exe`.
+  On first start it offers to install the virtual microphone. It does not update itself;
+  Vidar tells you when a new version is out and opens the download page.
 
 To build it from source instead, see [docs/development.md](docs/development.md#building). To get
 the same folder you can copy to another PC or zip up, run:
 
 ```
-cargo xtask dist
+cargo xtask dist         # dist\vidar
+cargo xtask installer    # dist\vidar, then dist\vidar-<version>-setup.exe
 ```
 
 This fetches the models and ONNX Runtime, builds the release binaries and puts everything Vidar
 needs in `dist\vidar`, licence files included. It needs
 [cargo-about](https://github.com/EmbarkStudios/cargo-about) for the Rust crate licences
-(`cargo install cargo-about --locked`).
+(`cargo install cargo-about --locked --features cli`), and the installer needs
+[Inno Setup 6](https://jrsoftware.org/isinfo.php) (`winget install JRSoftware.InnoSetup`).
 
 ```
 vidar.exe, vidar-cli.exe, onnxruntime.dll
@@ -147,10 +155,27 @@ vidar-cli --clean interview.m4a                       # writes interview_cleaned
 vidar-cli --clean podcast/ podcast-clean/ --engine rnnoise   # Voice instead of Voice HD
 ```
 
+## Updates
+
+About once a day Vidar asks GitHub for the latest version number. That is the only network
+access it makes, and no personal data is sent. When a newer version is out, Home and
+**Settings → Updates** say so:
+
+- **Installed with setup:** **Update now** downloads the new setup, checks it against its
+  published SHA-256, and runs it. Windows asks for permission once; Vidar gives your own
+  microphone back, updates and starts again.
+- **Portable zip:** **Download** opens the release page.
+
+Turn off **Check for updates** in Settings to stop the daily check; **Check now** still works.
+
 ## Uninstall
 
-Vidar has no installer, so removing it takes a few steps. Do them in this order: the first one
-needs Vidar itself.
+**Installed with setup:** remove Vidar in **Settings → Apps → Installed apps**. It quits
+Vidar (your own microphone comes back), turns off *Start with Windows*, and asks whether to
+remove the virtual microphone and whether to delete your settings.
+
+**Portable zip:** removing it takes a few steps. Do them in this order: the first one needs
+Vidar itself.
 
 1. **Remove the virtual microphone.** In Vidar, open **Settings → Apps and Windows → Virtual
    microphone → Uninstall** and confirm. Vidar turns off, makes your own microphone the Windows
