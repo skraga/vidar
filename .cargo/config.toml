@@ -1,2 +1,8 @@
 [alias]
 xtask = "run --quiet --package xtask --"
+
+# Link the C runtime into vidar.exe and vidar-cli.exe, so they start on a PC without the
+# Visual C++ Redistributable. Only onnxruntime.dll (Voice HD) still needs it; setup
+# installs it from Microsoft when it is missing.
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]

@@ -50,13 +50,37 @@ pub fn onnxruntime_path() -> Option<std::path::PathBuf> {
     candidates.into_iter().find(|p| p.is_file())
 }
 
+/// onnxruntime.dll needs the Microsoft Visual C++ Redistributable (Vidar's own programs
+/// link the C runtime statically). `Some(advice)` when it looks missing.
+fn vc_redist_missing() -> Option<String> {
+    let system =
+        std::env::var_os("SystemRoot").map(|r| std::path::PathBuf::from(r).join("System32"))?;
+    let missing = ["msvcp140.dll", "msvcp140_1.dll", "vcruntime140_1.dll"]
+        .iter()
+        .any(|f| !system.join(f).is_file());
+    let arch = if cfg!(target_arch = "aarch64") {
+        "arm64"
+    } else {
+        "x64"
+    };
+    missing.then(|| {
+        format!(
+            "the Microsoft Visual C++ Redistributable is not installed; Vidar's setup installs \
+             it, or get it from https://aka.ms/vs/17/release/vc_redist.{arch}.exe"
+        )
+    })
+}
+
 /// One ONNX Runtime environment for the whole process.
 fn environment() -> Result<&'static Environment, Error> {
     static ENV: OnceLock<Result<Environment, String>> = OnceLock::new();
     ENV.get_or_init(|| {
         let dll = onnxruntime_path().ok_or_else(|| "onnxruntime.dll not found".to_string())?;
         ort::init_from(&dll)
-            .map_err(|e| format!("cannot load {}: {e}", dll.display()))?
+            .map_err(|e| match vc_redist_missing() {
+                Some(advice) => format!("cannot load {}: {advice}", dll.display()),
+                None => format!("cannot load {}: {e}", dll.display()),
+            })?
             .with_name("vidar")
             .build()
             .map_err(|e| e.to_string())

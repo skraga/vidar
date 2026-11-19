@@ -7,10 +7,22 @@
 ; - Uninstall quits Vidar, turns off "Start with Windows" and offers to remove the driver
 ;   and the settings.
 ; - Update runs from the app pass /SILENT /SUPPRESSMSGBOXES /NORESTART /RELAUNCH.
+; - Installs the Microsoft Visual C++ Redistributable (needed by onnxruntime.dll, Voice HD)
+;   when it is missing or too old: downloaded from Microsoft, signature checked, run quietly.
+;   Without it Vidar still runs; Voice HD falls back to Voice.
+; - One script for both architectures: /DArch=x64 or /DArch=arm64.
 
 #ifndef AppVersion
   #error Pass /DAppVersion=x.y.z (cargo xtask installer does)
 #endif
+#ifndef Arch
+  #define Arch "x64"
+#endif
+#ifndef OutputBase
+  #define OutputBase "vidar-" + AppVersion + "-setup"
+#endif
+; Oldest Visual C++ runtime onnxruntime.dll 1.32 is known to work with (14.40, VS 2022 17.10).
+#define VCRedistMinMinor 40
 #ifndef SourceDir
   #define SourceDir "..\dist\vidar"
 #endif
@@ -37,16 +49,24 @@ VersionInfoDescription=Vidar Setup
 DefaultDirName={autopf}\Vidar
 DisableProgramGroupPage=yes
 PrivilegesRequired=admin
+#if Arch == "arm64"
+ArchitecturesAllowed=arm64
+ArchitecturesInstallIn64BitMode=arm64
+; Windows 11: VB-CABLE's setup is an x64 program, and Windows 10 on ARM cannot run those.
+MinVersion=10.0.22000
+#else
+; x64compatible includes Windows 11 on ARM, where the x64 build runs emulated.
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 ; Windows 10 1903, as the README says.
 MinVersion=10.0.18362
+#endif
 WizardStyle=modern
 SetupIconFile={#IconFile}
 UninstallDisplayIcon={app}\vidar.exe
 UninstallDisplayName=Vidar
 OutputDir={#OutputDir}
-OutputBaseFilename=vidar-{#AppVersion}-setup
+OutputBaseFilename={#OutputBase}
 Compression=lzma2/max
 SolidCompression=yes
 SetupMutex=VidarSetup
@@ -117,11 +137,80 @@ begin
     Exec(Exe, '--quit', '', SW_HIDE, ewWaitUntilTerminated, Code);
 end;
 
+{ Is a recent enough Microsoft Visual C++ 2015-2022 Redistributable for this architecture
+  installed? It registers itself under VisualStudio\14.0\VC\Runtimes. }
+function VCRedistInstalled: Boolean;
+var
+  Key: String;
+  Installed, Major, Minor: Cardinal;
+begin
+  Key := 'SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\{#Arch}';
+  Result := RegQueryDWordValue(HKLM64, Key, 'Installed', Installed) and (Installed = 1)
+    and RegQueryDWordValue(HKLM64, Key, 'Major', Major)
+    and RegQueryDWordValue(HKLM64, Key, 'Minor', Minor)
+    and ((Major > 14) or ((Major = 14) and (Minor >= {#VCRedistMinMinor})));
+end;
+
+{ Signed by Microsoft, and the signature checks out? Asks Windows (Authenticode). }
+function SignedByMicrosoft(FileName: String): Boolean;
+var
+  Code: Integer;
+begin
+  Result := Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+    '-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$s = Get-AuthenticodeSignature -LiteralPath ''' +
+    FileName + '''; if ($s.Status -eq ''Valid'' -and $s.SignerCertificate.Subject -match ''O=Microsoft Corporation'') { exit 0 } else { exit 1 }"',
+    '', SW_HIDE, ewWaitUntilTerminated, Code) and (Code = 0);
+end;
+
+{ Download the Redistributable from Microsoft and install it quietly. Returns '' on success,
+  otherwise why not. Exit codes: 0 done, 3010 done (restart later), 1638 newer one present. }
+function InstallVCRedist: String;
+var
+  Url, Exe: String;
+  Code: Integer;
+begin
+  Result := '';
+  Url := 'https://aka.ms/vs/17/release/vc_redist.{#Arch}.exe';
+  try
+    DownloadTemporaryFile(Url, 'vc_redist.{#Arch}.exe', '', nil);
+  except
+    Result := 'it could not be downloaded (' + GetExceptionMessage + ')';
+    Exit;
+  end;
+  Exe := ExpandConstant('{tmp}\vc_redist.{#Arch}.exe');
+  if not SignedByMicrosoft(Exe) then
+  begin
+    Result := 'the download is not signed by Microsoft';
+    Exit;
+  end;
+  if not Exec(Exe, '/install /quiet /norestart', '', SW_HIDE, ewWaitUntilTerminated, Code) then
+    Result := 'it could not be started'
+  else if (Code <> 0) and (Code <> 3010) and (Code <> 1638) then
+    Result := 'its setup ended with code ' + IntToStr(Code);
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  Problem: String;
 begin
   { The new vidar.exe sends the request, whichever version is running. }
   ExtractTemporaryFile('vidar.exe');
   QuitVidar(ExpandConstant('{tmp}\vidar.exe'));
+
+  if not VCRedistInstalled then
+  begin
+    WizardForm.PreparingLabel.Caption := 'Installing the Microsoft Visual C++ Runtime...';
+    Problem := InstallVCRedist;
+    { Not fatal: Vidar runs without it, only Voice HD needs it. }
+    if Problem <> '' then
+    begin
+      Log('Visual C++ Redistributable not installed: ' + Problem);
+      SuppressibleMsgBox('The Microsoft Visual C++ Runtime could not be installed: ' + Problem +
+        '.' + #13#10#13#10 + 'Vidar works without it, but Voice HD needs it. You can install ' +
+        'it later from https://aka.ms/vs/17/release/vc_redist.{#Arch}.exe', mbInformation,
+        MB_OK, IDOK);
+    end;
+  end;
   Result := '';
 end;
 
