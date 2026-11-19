@@ -518,16 +518,17 @@ fn cpu_count() -> usize {
         .unwrap_or(1)
 }
 
+/// A small pill sized to its text. Drawn by hand: a `Frame` stretches to the full width in a
+/// centred layout.
 fn badge(ui: &mut egui::Ui, bg: Color32, fg: Color32, text: &str) -> egui::Response {
-    egui::Frame::new()
-        .fill(bg)
-        .corner_radius(6)
-        .inner_margin(egui::Margin::symmetric(6, 1))
-        .show(ui, |ui| {
-            ui.label(RichText::new(text).font(semi(10.5)).color(fg));
-        })
-        .response
-        .interact(Sense::hover())
+    let galley = ui.painter().layout_no_wrap(text.to_owned(), semi(10.5), fg);
+    let pad = vec2(6.0, 1.0);
+    let (rect, resp) = ui.allocate_exact_size(galley.size() + 2.0 * pad, Sense::hover());
+    if ui.is_rect_visible(rect) {
+        ui.painter().rect_filled(rect, 6, bg);
+        ui.painter().galley(rect.min + pad, galley, fg);
+    }
+    resp
 }
 
 /// The big round power button: the Vidar logo inside a circle of short bars. Off, the bars
@@ -2975,19 +2976,17 @@ impl VidarWindow {
                 .color(p.text),
             );
             ui.add_space(10.0);
-            ui.horizontal(|ui| {
-                if primary(ui, p, "Support VB-Audio", 150.0) {
-                    open_url(VB_CABLE_URL);
-                }
-                if secondary(ui, p, "www.vb-cable.com").clicked() {
-                    open_url(VB_CABLE_SITE);
-                }
-            });
+            if primary(ui, p, "Support VB-Audio", 150.0) {
+                open_url(VB_CABLE_URL);
+            }
             ui.add_space(6.0);
+            // The origin VB-Audio's distribution terms ask us to name, as text.
             ui.label(
-                RichText::new("Companies and organisations need a VB-CABLE licence from VB-Audio.")
-                    .small()
-                    .color(p.muted),
+                RichText::new(format!(
+                    "From {VB_CABLE_SITE}. Companies and organisations need a VB-CABLE licence from VB-Audio."
+                ))
+                .small()
+                .color(p.muted),
             );
         });
         ui.add_space(8.0);
@@ -3109,7 +3108,7 @@ impl VidarWindow {
 /// VB-CABLE's product page, with the donation and licence links.
 const VB_CABLE_URL: &str = "https://vb-audio.com/Cable/";
 /// The origin VB-Audio's distribution terms ask us to name.
-const VB_CABLE_SITE: &str = "https://www.vb-cable.com";
+const VB_CABLE_SITE: &str = "www.vb-cable.com";
 
 /// (component, author, licence, homepage) shown under "Noise models" on the About tab.
 const CREDITS: &[(&str, &str, &str, &str)] = &[
