@@ -49,6 +49,43 @@ jobs:
           fi
           echo "VERSION=${version}" >> "$GITHUB_ENV"
 
+      # The release notes are this version's section of CHANGELOG.md (a pre-release without
+      # its own section uses "Unreleased"), followed by the download instructions.
+      # Checked before the long build, so a missing entry fails fast.
+      - name: Release notes from CHANGELOG.md
+        run: |
+          section() {
+            awk -v h="## $1" '
+              /^## / { if (found) exit; if ($0 == h || index($0, h " ") == 1) { found = 1; next } }
+              found' CHANGELOG.md
+          }
+          notes=$(section "$VERSION")
+          if [ -z "${notes//[[:space:]]/}" ] && [[ "$VERSION" == *-* ]]; then
+            notes=$(section "Unreleased")
+          fi
+          if [ -z "${notes//[[:space:]]/}" ]; then
+            echo "::error file=CHANGELOG.md::No changelog entry for ${VERSION}. Add a '## ${VERSION}' section."
+            exit 1
+          fi
+          mkdir -p notes
+          {
+            printf '%s\n\n' "$notes"
+            cat <<'EOF'
+          ---
+
+          **Install:** download `vidar-*-setup.exe` and run it. It installs Vidar and the
+          virtual microphone (VB-CABLE) with one permission prompt, and later versions
+          update from inside the app.
+
+          **Portable:** download `vidar-*-windows-x64.zip`, extract it anywhere and run
+          `vidar.exe`. On first start Vidar offers to install the virtual microphone.
+
+          Windows 10 (1903+) / 11, 64-bit x86. Verify a download against its `.sha256`
+          file if you like. All changes: [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md).
+          EOF
+          } > notes/release-notes.md
+          cat notes/release-notes.md
+
       - run: rustup toolchain install # version + components from rust-toolchain.toml
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
@@ -99,6 +136,11 @@ jobs:
           name: vidar-release
           path: out/*
           if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-notes
+          path: notes/release-notes.md
+          if-no-files-found: error
 
   publish:
     name: publish GitHub release
@@ -111,22 +153,15 @@ jobs:
         with:
           name: vidar-release
           path: out
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-notes
+          path: notes
       - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: ${{ env.TAG }}
           name: Vidar ${{ env.TAG }}
           prerelease: ${{ contains(env.TAG, '-') }}
-          generate_release_notes: true
           fail_on_unmatched_files: true
           files: out/*
-          body: |
-            Windows 10 (1903+) / 11, 64-bit x86.
-
-            **Install:** download `vidar-*-setup.exe` and run it. It installs Vidar and the
-            virtual microphone (VB-CABLE) with one permission prompt, and later versions
-            update from inside the app.
-
-            **Portable:** download `vidar-*-windows-x64.zip`, extract it anywhere and run
-            `vidar.exe`. On first start Vidar offers to install the virtual microphone.
-
-            Verify a download against its `.sha256` file if you like.
+          body_path: notes/release-notes.md

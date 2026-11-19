@@ -48,16 +48,20 @@ rather than its own.
 
 Releases are built by [`.github/workflows/release.yml`](../.github/workflows/release.yml):
 
-1. Bump `version` under `[workspace.package]` in `Cargo.toml`, run `cargo check` so
+1. In [CHANGELOG.md](../CHANGELOG.md), rename **Unreleased** to `## <version> — <date>` and
+   start a new empty **Unreleased** above it. Write for users: what they will notice, not how
+   it was done. `git log --oneline v<previous>..` lists what went in.
+2. Bump `version` under `[workspace.package]` in `Cargo.toml`, run `cargo check` so
    `Cargo.lock` follows, and commit.
-2. Tag and push: `git tag v0.2.0 && git push origin main v0.2.0`.
+3. Tag and push: `git tag v0.2.0 && git push origin main v0.2.0`.
 
-The workflow checks that the tag matches the Cargo version, runs the tests, builds the package
+The workflow checks that the tag matches the Cargo version and that `CHANGELOG.md` has a
+section for it (a pre-release may use **Unreleased**), runs the tests, builds the package
 and installer with `cargo xtask installer` (which needs cargo-about for
 `licenses\THIRD_PARTY_LICENSES.html`, checked by the CI `cargo-about` job on every push, and
 Inno Setup 6, installed on the runner) and publishes `vidar-<version>-setup.exe` and
-`vidar-<version>-windows-x64.zip`, each with its `.sha256`, as a GitHub release with
-generated notes. Tags with a suffix (`v0.2.0-rc.1`) become pre-releases, which the app's
+`vidar-<version>-windows-x64.zip`, each with its `.sha256`, as a GitHub release whose notes
+are that changelog section plus the download instructions. Tags with a suffix (`v0.2.0-rc.1`) become pre-releases, which the app's
 update check skips. To rebuild an existing tag, run the workflow by hand
 (**Actions → Release → Run workflow**).
 
