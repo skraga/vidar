@@ -21,3 +21,4 @@ Thumbs.db
 # Benchmark output (docs/benchmarks.md)
 /bench-out/
 /mushra/
+.claude/settings.json
