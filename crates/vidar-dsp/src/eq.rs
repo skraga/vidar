@@ -1,36 +1,52 @@
-//! Five-band voice equaliser: a low shelf, three peaks and a high shelf (RBJ cookbook biquads).
+//! Seven-band voice equaliser: a low shelf, five peaks and a high shelf (RBJ cookbook biquads).
 //!
 //! The bands sit where a voice actually changes character, rather than on a music EQ's
-//! octave grid: body (100 Hz), mud (300 Hz), nasal tone (1 kHz), presence (3 kHz) and
-//! air (8 kHz). It runs after the noise model, so the model always hears the natural voice.
+//! octave grid: body (100 Hz), warmth (200 Hz), boxiness (500 Hz), nasal tone (1 kHz),
+//! presence (2.5 kHz), sibilance (5 kHz) and air (8 kHz). It runs after the noise model, so
+//! the model always hears the natural voice.
 
 use std::f64::consts::{PI, SQRT_2};
 
-pub const EQ_BANDS: usize = 5;
+pub const EQ_BANDS: usize = 7;
 /// Centre (peaks) or corner (shelves) frequency of each band.
-pub const EQ_FREQS_HZ: [f64; EQ_BANDS] = [100.0, 300.0, 1_000.0, 3_000.0, 8_000.0];
+pub const EQ_FREQS_HZ: [f64; EQ_BANDS] = [100.0, 200.0, 500.0, 1_000.0, 2_500.0, 5_000.0, 8_000.0];
 /// Where each band's gain is measured: the peak centres, and for the shelves a point out on
 /// their plateau (a shelf has only half its gain at its corner). [`VoiceEq::set_gains`]
 /// makes the combined response pass through these points, so a curve drawn through them is
 /// what you hear.
-pub const EQ_POINTS_HZ: [f64; EQ_BANDS] = [60.0, 300.0, 1_000.0, 3_000.0, 13_000.0];
+pub const EQ_POINTS_HZ: [f64; EQ_BANDS] = [60.0, 200.0, 500.0, 1_000.0, 2_500.0, 5_000.0, 13_000.0];
 /// Largest boost or cut per band.
 pub const EQ_MAX_DB: f64 = 12.0;
 /// Largest gain a single filter may get after correction (neighbouring bands overlap, so a
 /// filter sometimes needs a little more than the gain asked for at its point).
 const FILTER_MAX_DB: f64 = 18.0;
-/// Q of the three peaking bands: about 1.4 octaves wide, broad enough to sound natural.
-const PEAK_Q: f64 = 1.0;
+/// Q of the peaking bands: about one octave wide. Broad enough to sound natural, narrow
+/// enough that neighbouring bands (1 to 1.3 octaves apart) can still be set independently.
+const PEAK_Q: f64 = 1.4;
 
-/// Built-in tones (`name`, gains in dB from low to high). `"off"` is flat.
-pub const EQ_PRESETS: [(&str, [f64; EQ_BANDS]); 4] = [
+/// Built-in tones (`name`, gains in dB from low to high, at [`EQ_POINTS_HZ`]). `"off"` is flat.
+pub const EQ_PRESETS: [(&str, [f64; EQ_BANDS]); 11] = [
     ("off", [0.0; EQ_BANDS]),
     // Fuller and softer: more body, less edge and hiss. Thin headset mics.
-    ("warm", [3.0, 1.0, 0.0, -1.5, -3.0]),
-    // Easier to understand: less boom and mud, more presence and air. Boomy or muffled mics.
-    ("clear", [-2.0, -2.5, 0.0, 3.0, 2.0]),
-    // Radio-style: a little weight, scooped mud, forward presence.
-    ("broadcast", [2.0, -2.0, -1.0, 2.5, 1.5]),
+    ("warm", [3.0, 2.0, 0.5, 0.0, -1.5, -2.0, -3.0]),
+    // Easier to understand: less boom and mud, more presence and air. Boomy mics.
+    ("clear", [-2.0, -2.5, -1.5, 0.0, 3.0, 2.5, 2.0]),
+    // Radio-style: a little weight, scooped boxiness, forward presence.
+    ("broadcast", [2.0, -1.0, -2.5, -1.0, 2.5, 2.0, 1.5]),
+    // Opens up dull or muffled mics (cheap webcams, a mic under clothing).
+    ("bright", [0.0, -1.0, -1.0, 0.0, 2.0, 4.0, 5.0]),
+    // Built-in laptop mics: less boxy room sound, more presence, a little less hiss.
+    ("laptop", [1.0, 1.5, -3.0, -1.0, 2.0, 1.0, -1.0]),
+    // Tames harsh, sibilant mics: softer S sounds and edge, the voice itself unchanged.
+    ("soft", [0.0, 0.5, 0.0, 0.0, -2.0, -4.0, -3.0]),
+    // A focused cut of the honky, nasal region around 1 kHz.
+    ("nasal", [0.0, 0.0, -1.0, -4.0, -0.5, 0.0, 0.0]),
+    // Cuts through game sound and compressed voice chat: lean lows, strong presence.
+    ("gaming", [-3.0, -2.0, -1.0, 1.0, 4.0, 2.5, 0.0]),
+    // Tinny gaming headsets: back the missing lows, soften the harsh upper mids.
+    ("headset", [3.5, 2.5, 0.5, -1.5, -1.0, -1.5, -1.0]),
+    // Talking very close to the mic: removes the boom (proximity effect), keeps clarity.
+    ("close", [-4.0, -2.0, -0.5, 0.0, 1.0, 0.5, 1.0]),
 ];
 
 /// Gains for a preset name, or `None` if it is not one (e.g. `"custom"`).
@@ -47,6 +63,8 @@ enum Kind {
 
 const KINDS: [Kind; EQ_BANDS] = [
     Kind::LowShelf,
+    Kind::Peak,
+    Kind::Peak,
     Kind::Peak,
     Kind::Peak,
     Kind::Peak,
@@ -156,7 +174,7 @@ impl Biquad {
     }
 }
 
-/// The five-band equaliser. Flat bands are skipped, so a flat EQ costs nothing.
+/// The seven-band equaliser. Flat bands are skipped, so a flat EQ costs nothing.
 #[derive(Debug, Clone)]
 pub struct VoiceEq {
     sample_rate: f64,
@@ -343,12 +361,13 @@ mod tests {
     /// and does not run far past the range when all bands are at the limit.
     #[test]
     fn response_passes_through_every_point() {
-        let cases = [
+        let mut cases = vec![
             [-12.0; EQ_BANDS],
             [12.0; EQ_BANDS],
-            [12.0, -12.0, 12.0, -12.0, 12.0],
-            [3.0, 1.0, 0.0, -1.5, -3.0],
+            [12.0, -12.0, 12.0, -12.0, 12.0, -12.0, 12.0],
+            [-12.0, 12.0, -12.0, 12.0, -12.0, 12.0, -12.0],
         ];
+        cases.extend(EQ_PRESETS.iter().map(|(_, g)| *g));
         for gains in cases {
             let mut eq = VoiceEq::new(48_000.0);
             eq.set_gains(gains);
@@ -363,11 +382,32 @@ mod tests {
         }
     }
 
+    /// Equal gains on every band give a nearly even lift. Peaks one octave wide leave about
+    /// 2.2 dB of ripple between points at +-6 dB (the earlier five-band layout left 3.1 dB).
+    #[test]
+    fn equal_gains_are_smooth_between_points() {
+        for db in [6.0, -6.0] {
+            let mut eq = VoiceEq::new(48_000.0);
+            eq.set_gains([db; EQ_BANDS]);
+            for k in 0..=200 {
+                let f = 60.0 * (13_000.0f64 / 60.0).powf(f64::from(k) / 200.0);
+                let r = eq.response_db(f);
+                assert!(
+                    (r - db).abs() < 2.5,
+                    "{db} dB everywhere: {r:.2} dB at {f:.0} Hz"
+                );
+            }
+        }
+    }
+
     #[test]
     fn gains_are_clamped_and_cleaned() {
         let mut eq = VoiceEq::new(48_000.0);
-        eq.set_gains([40.0, -40.0, f64::NAN, 0.0, 1.0]);
-        assert_eq!(eq.gains_db(), [EQ_MAX_DB, -EQ_MAX_DB, 0.0, 0.0, 1.0]);
+        eq.set_gains([40.0, -40.0, f64::NAN, 0.0, 1.0, 0.0, -2.0]);
+        assert_eq!(
+            eq.gains_db(),
+            [EQ_MAX_DB, -EQ_MAX_DB, 0.0, 0.0, 1.0, 0.0, -2.0]
+        );
     }
 
     #[test]
@@ -382,7 +422,7 @@ mod tests {
     #[test]
     fn far_away_frequencies_are_untouched_by_a_peak() {
         let mut eq = VoiceEq::new(48_000.0);
-        eq.set_gains([0.0, 0.0, 6.0, 0.0, 0.0]);
+        eq.set_gains([0.0, 0.0, 0.0, 6.0, 0.0, 0.0, 0.0]);
         assert!(sine_gain_db(&mut eq, 60.0).abs() < 0.5);
         assert!(sine_gain_db(&mut eq, 15_000.0).abs() < 0.5);
     }

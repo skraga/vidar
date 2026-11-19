@@ -98,7 +98,7 @@ sounds exactly like the live microphone.
 | 5 | Auto-level | Slowly raises quiet voices toward -24 dBFS, by up to +9 dB, at most 5 dB per second | off |
 | 6 | Gain | Output gain × mic boost (× 1.2 for built-in laptop mics) | 1.08 |
 | 7 | Gate | Turns the microphone down between phrases, so pauses stay quiet | always |
-| 8 | Voice tone | Five-band equaliser (100 Hz, 300 Hz, 1 kHz, 3 kHz, 8 kHz, ±12 dB): a preset or a custom curve. After the model, so the model hears the natural voice | when not Off |
+| 8 | Voice tone | Seven-band equaliser (100 Hz shelf, 200 Hz, 500 Hz, 1 kHz, 2.5 kHz, 5 kHz, 8 kHz shelf, ±12 dB): one of ten presets or a custom curve. After the model, so the model hears the natural voice | when not Off |
 | 9 | Limiter | Soft limit at 85% of full scale, so Vidar AI Microphone never clips | always |
 
 ### What changes between modes

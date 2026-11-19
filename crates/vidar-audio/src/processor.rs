@@ -365,9 +365,9 @@ mod tests {
     fn eq_changes_reach_the_chain() {
         let (mut p, controls, _, _, _) = setup(None);
         assert!(p.eq.is_flat());
-        controls.set_eq([0.0, 0.0, 6.0, 0.0, 0.0]);
+        controls.set_eq([0.0, 0.0, 0.0, 6.0, 0.0, 0.0, 0.0]);
         p.push_interleaved(&vec![0.0f32; FRAME_SIZE], 1, &mut |_| {});
-        assert_eq!(p.eq.gains_db(), [0.0, 0.0, 6.0, 0.0, 0.0]);
+        assert_eq!(p.eq.gains_db(), [0.0, 0.0, 0.0, 6.0, 0.0, 0.0, 0.0]);
     }
 
     #[test]

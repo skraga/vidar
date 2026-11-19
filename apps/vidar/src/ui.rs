@@ -410,53 +410,106 @@ const BOOST_TIPS: [Tip; 4] = [
     ),
 ];
 const TONE_HELP: Tip = ("Voice tone", "Shapes how your voice sounds to others, after the noise is removed. Pick a tone, or drag the points on the curve to make your own. Double-click a point to reset it.");
-const TONE_PRESETS: [(&str, &str); 5] = [
+/// Voice tone choices, shown in rows of [`TONE_ROW`]: the presets, then "Custom".
+/// Rows: general tones, fixes for one problem, then tones for a kind of microphone.
+const TONE_PRESETS: [(&str, &str); 12] = [
     ("off", "Off"),
     ("warm", "Warm"),
     ("clear", "Clear"),
     ("broadcast", "Broadcast"),
+    ("bright", "Bright"),
+    ("soft", "Soft"),
+    ("nasal", "Less nasal"),
+    ("gaming", "Gaming"),
+    ("headset", "Headset"),
+    ("laptop", "Laptop"),
+    ("close", "Close mic"),
     ("custom", "Custom"),
 ];
-const TONE_TIPS: [Tip; 5] = [
+const TONE_ROW: usize = 4;
+const TONE_TIPS: [Tip; 12] = [
     (
         "Off",
         "Your voice exactly as the microphone and the noise model deliver it.",
     ),
     (
         "Warm",
-        "Fuller and softer: more body, less edge and hiss. Good for thin headset mics.",
+        "Fuller and softer: more body, less edge and hiss. Good for a thin-sounding voice.",
     ),
     (
         "Clear",
-        "Easier to understand: less boom and mud, more presence. Good for boomy or muffled mics.",
+        "Easier to understand: less boom and mud, more presence. Good for boomy mics.",
     ),
     (
         "Broadcast",
-        "Radio-style: a little weight, less mud, a forward voice.",
+        "Radio-style: a little weight, less boxiness, a forward voice.",
+    ),
+    (
+        "Bright",
+        "Opens up a dull or muffled sound. Good for cheap webcams or a mic under clothing.",
+    ),
+    (
+        "Soft",
+        "Tames a harsh mic: softer S sounds and edge, the voice itself unchanged.",
+    ),
+    (
+        "Less nasal",
+        "A focused cut around 1 kHz for a honky or nasal sound.",
+    ),
+    (
+        "Gaming",
+        "Cuts through game sound and voice chat: lean lows, strong presence.",
+    ),
+    (
+        "Headset",
+        "For tinny gaming headsets: adds the missing lows, softens harsh upper mids.",
+    ),
+    (
+        "Laptop",
+        "For built-in laptop mics: less boxy room sound, more presence, a little less hiss.",
+    ),
+    (
+        "Close mic",
+        "When you talk very close to the mic: removes the boom, keeps your voice clear.",
     ),
     ("Custom", "Your own curve. Drag the points to change it."),
 ];
-/// What each band does, for the point tooltips.
-const TONE_BANDS: [(&str, &str); vidar_dsp::EQ_BANDS] = [
+/// Each band: its label under the graph, its name, and what it does (for the tooltips).
+const TONE_BANDS: [(&str, &str, &str); vidar_dsp::EQ_BANDS] = [
     (
+        "Low",
         "Body",
         "100 Hz and below. Up: fuller, deeper. Down: less boom and rumble.",
     ),
     (
-        "Mud",
-        "Around 300 Hz. Down: cleaner, less boxy. Up: thicker.",
+        "200",
+        "Warmth",
+        "Around 200 Hz. Up: warmer, thicker. Down: thinner, less muddy.",
     ),
     (
+        "500",
+        "Boxiness",
+        "Around 500 Hz. Down: less boxy, less 'small room'. Up: fuller midrange.",
+    ),
+    (
+        "1k",
         "Nasal",
         "Around 1 kHz. Down: less honky or nasal. Up: more cutting.",
     ),
     (
+        "2.5k",
         "Presence",
-        "Around 3 kHz. Up: clearer, more forward. Down: softer, less harsh.",
+        "Around 2.5 kHz. Up: clearer, more forward. Down: softer, less harsh.",
     ),
     (
+        "5k",
+        "Sibilance",
+        "Around 5 kHz. Down: softer S and T sounds. Up: crisper consonants.",
+    ),
+    (
+        "High",
         "Air",
-        "8 kHz and above. Up: brighter, crisper. Down: less hiss and sharp S sounds.",
+        "8 kHz and above. Up: brighter, more open. Down: less hiss.",
     ),
 ];
 
@@ -913,8 +966,9 @@ fn tone_curve(
             painter.galley(bubble.center() - galley.size() / 2.0, galley, p.on_accent);
         }
 
-        // Under the plot: what the band is, and its current gain.
-        let (name, what) = TONE_BANDS[i];
+        // Under the plot: where the band is, and its current gain (the points sit close
+        // together, so the band's name is in its tooltip).
+        let (label, name, what) = TONE_BANDS[i];
         let name_color = if is_hot {
             p.text
         } else {
@@ -923,8 +977,8 @@ fn tone_curve(
         painter.text(
             pos2(x, frame.bottom() + 11.0),
             Align2::CENTER_CENTER,
-            name,
-            semi(11.5),
+            label,
+            semi(11.0),
             name_color,
         );
         let value_color = if g == 0.0 {
@@ -935,8 +989,8 @@ fn tone_curve(
         painter.text(
             pos2(x, frame.bottom() + 26.0),
             Align2::CENTER_CENTER,
-            db_text(g),
-            FontId::proportional(10.5),
+            db_short(g),
+            FontId::proportional(10.0),
             value_color,
         );
         if resp.hovered() && !resp.dragged() {
@@ -944,6 +998,17 @@ fn tone_curve(
         }
     }
     out
+}
+
+/// Gain under a tone graph point, without the unit: "0", "+3.5", "-2".
+fn db_short(db: f64) -> String {
+    if db == 0.0 {
+        "0".into()
+    } else if db.fract() == 0.0 {
+        format!("{db:+.0}")
+    } else {
+        format!("{db:+.1}")
+    }
 }
 
 /// Gain as shown on the tone graph: "0 dB", "+3.5 dB", "-2 dB".
@@ -2503,11 +2568,22 @@ impl VidarWindow {
     fn tone_card(&mut self, ui: &mut egui::Ui, p: &Pal, v: &View) {
         card(ui, p, |ui| {
             section_help(ui, p, "Voice tone", TONE_HELP);
+            // Too many choices for one row: one segmented row per TONE_ROW of them.
             let sel = TONE_PRESETS.iter().position(|(k, _)| *k == v.eq_preset);
             let labels: Vec<&str> = TONE_PRESETS.iter().map(|(_, l)| *l).collect();
-            if let Some(i) = segmented(ui, p, &labels, sel, true, &TONE_TIPS) {
-                self.handle
-                    .send(Cmd::SetEqPreset(TONE_PRESETS[i].0.to_string()));
+            for (row, chunk) in labels.chunks(TONE_ROW).enumerate() {
+                let first = row * TONE_ROW;
+                if row > 0 {
+                    ui.add_space(4.0);
+                }
+                let row_sel = sel
+                    .and_then(|s| s.checked_sub(first))
+                    .filter(|&s| s < chunk.len());
+                let tips = &TONE_TIPS[first..first + chunk.len()];
+                if let Some(i) = segmented(ui, p, chunk, row_sel, true, tips) {
+                    self.handle
+                        .send(Cmd::SetEqPreset(TONE_PRESETS[first + i].0.to_string()));
+                }
             }
             ui.add_space(6.0);
             let gains = vidar_dsp::eq_preset(&v.eq_preset).unwrap_or(v.eq_custom_db);
@@ -3304,5 +3380,32 @@ pub fn run_window(
     );
     if let Err(e) = r {
         log::warn!("window failed: {e}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every tone button names a real preset (or "custom"), every preset has a button, and
+    /// the labels, tooltips and rows line up.
+    #[test]
+    fn tone_buttons_match_the_presets() {
+        for (key, _) in TONE_PRESETS {
+            assert!(
+                key == "custom" || vidar_dsp::eq_preset(key).is_some(),
+                "button {key} has no preset"
+            );
+        }
+        for (key, _) in vidar_dsp::EQ_PRESETS {
+            assert!(
+                TONE_PRESETS.iter().any(|(k, _)| *k == key),
+                "preset {key} has no button"
+            );
+        }
+        for ((_, label), (tip, _)) in TONE_PRESETS.iter().zip(TONE_TIPS) {
+            assert_eq!(*label, tip, "tooltip order");
+        }
+        assert_eq!(TONE_PRESETS.len() % TONE_ROW, 0, "rows are full");
     }
 }

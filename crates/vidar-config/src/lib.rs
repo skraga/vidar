@@ -62,7 +62,9 @@ pub struct Config {
 
     /// Voice tone: `"off"`, a preset from [`vidar_dsp::EQ_PRESETS`], or `"custom"`.
     pub eq_preset: String,
-    /// Band gains in dB (low to high) used when `eq_preset` is `"custom"`.
+    /// Band gains in dB (low to high) used when `eq_preset` is `"custom"`. A list of another
+    /// length (the five-band curve of earlier versions) reads as flat.
+    #[serde(deserialize_with = "eq_gains_or_flat")]
     pub eq_custom_db: [f64; vidar_dsp::EQ_BANDS],
 
     /// `"dpdfnet"` (Voice HD, the default) or `"rnnoise"` (Voice). Anything else reads as
@@ -154,6 +156,20 @@ impl Config {
     }
 }
 
+/// `eq_custom_db` with exactly [`vidar_dsp::EQ_BANDS`] numbers, or flat for anything else, so
+/// an old or hand-edited curve resets only itself rather than failing the whole file.
+fn eq_gains_or_flat<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<[f64; vidar_dsp::EQ_BANDS], D::Error> {
+    let v = Value::deserialize(d)?;
+    let gains: Option<Vec<f64>> = v
+        .as_array()
+        .and_then(|a| a.iter().map(Value::as_f64).collect());
+    Ok(gains
+        .and_then(|g| g.try_into().ok())
+        .unwrap_or([0.0; vidar_dsp::EQ_BANDS]))
+}
+
 fn finite_or(v: f64, fallback: f64) -> f64 {
     if v.is_finite() {
         v
@@ -181,13 +197,13 @@ mod tests {
     fn eq_settings_are_sanitized_and_resolved() {
         let mut c = Config {
             eq_preset: " Warm ".into(),
-            eq_custom_db: [99.0, f64::NAN, -3.0, 0.0, 1.0],
+            eq_custom_db: [99.0, f64::NAN, -3.0, 0.0, 1.0, 0.0, -2.0],
             ..Config::default()
         };
         c.sanitize();
         assert_eq!(c.eq_preset, "warm");
         assert_eq!(c.eq_gains_db(), vidar_dsp::eq_preset("warm").unwrap());
-        assert_eq!(c.eq_custom_db, [12.0, 0.0, -3.0, 0.0, 1.0]);
+        assert_eq!(c.eq_custom_db, [12.0, 0.0, -3.0, 0.0, 1.0, 0.0, -2.0]);
         c.eq_preset = "custom".into();
         assert_eq!(c.eq_gains_db(), c.eq_custom_db);
         c.eq_preset = "loudness-war".into();
@@ -208,6 +224,20 @@ mod tests {
         // Settings that still exist and unknown keys survive.
         assert_eq!(c.vad_threshold, 0.82);
         assert_eq!(c.extra["something_new"], 1);
+    }
+
+    #[test]
+    fn a_curve_of_the_wrong_length_reads_as_flat_and_keeps_the_rest() {
+        let json = r#"{"version":"2.1.0","vad_threshold":0.82,"eq_preset":"custom",
+            "eq_custom_db":[3.0,1.0,0.0,-1.5,-3.0]}"#;
+        let c: Config = serde_json::from_str(json).unwrap();
+        assert_eq!(c.eq_custom_db, [0.0; vidar_dsp::EQ_BANDS]);
+        assert_eq!(c.vad_threshold, 0.82);
+        assert_eq!(c.eq_preset, "custom");
+
+        let ok = r#"{"eq_custom_db":[1.0,2.0,3.0,4.0,5.0,6.0,7.0]}"#;
+        let c: Config = serde_json::from_str(ok).unwrap();
+        assert_eq!(c.eq_custom_db, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]);
     }
 
     #[test]

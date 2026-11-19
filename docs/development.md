@@ -163,8 +163,8 @@ Hand-edited values are clamped to safe ranges on load.
 | `vad_threshold` | Strength: the gate's open threshold, 0.05–0.99 | `0.70` |
 | `mic_boost_db` | Microphone boost, 0–30 dB | `0` |
 | `auto_level` | Level quiet speech automatically | `false` |
-| `eq_preset` | Voice tone: `off`, `warm`, `clear`, `broadcast` or `custom` | `off` |
-| `eq_custom_db` | Custom tone, five band gains in dB (100 Hz, 300 Hz, 1 kHz, 3 kHz, 8 kHz), ±12 | `[0,0,0,0,0]` |
+| `eq_preset` | Voice tone: `off`, `warm`, `clear`, `broadcast`, `bright`, `soft`, `nasal`, `gaming`, `headset`, `laptop`, `close` or `custom` | `off` |
+| `eq_custom_db` | Custom tone, seven band gains in dB (low shelf, 200 Hz, 500 Hz, 1 kHz, 2.5 kHz, 5 kHz, high shelf), ±12. Any other length reads as flat | `[0,0,0,0,0,0,0]` |
 | `denoise_engine` | `dpdfnet` (Voice HD) or `rnnoise` (Voice); anything else reads as `rnnoise` | `dpdfnet` |
 | `raw_capture` | Ask Windows for the mic signal without vendor "enhancements" | `false` |
 | `start_with_windows` | Start at sign-in | `false` |
