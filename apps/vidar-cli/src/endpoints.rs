@@ -109,8 +109,8 @@ fn default_driver_dir() -> PathBuf {
     if installed.is_dir() {
         return installed;
     }
-    // Development builds.
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../drivers/vbcable")
+    // Development builds run from target\; otherwise report the missing folder next to the exe.
+    vidar_denoise::repo_path("drivers/vbcable").unwrap_or(installed)
 }
 
 pub fn run(action: Action) -> ExitCode {

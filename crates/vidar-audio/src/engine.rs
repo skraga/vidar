@@ -142,7 +142,15 @@ impl Engine {
             std::thread::Builder::new()
                 .name("vidar-render".into())
                 .spawn(move || render_thread(id, out_opts, consumer, meters, stop, ready_tx))
-                .map_err(|e| explain(None, e.to_string()))?
+        };
+        let render = match render {
+            Ok(t) => t,
+            Err(e) => {
+                // Don't leave the capture thread holding the microphone.
+                stop.store(true, Relaxed);
+                let _ = capture.join();
+                return Err(explain(None, e.to_string()));
+            }
         };
 
         let mut info = StreamInfo {

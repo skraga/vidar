@@ -46,9 +46,7 @@ pub fn onnxruntime_path() -> Option<std::path::PathBuf> {
     {
         candidates.push(dir.join("onnxruntime.dll"));
     }
-    candidates.push(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../third_party/onnxruntime/onnxruntime.dll"),
-    );
+    candidates.extend(crate::repo_path("third_party/onnxruntime/onnxruntime.dll"));
     candidates.into_iter().find(|p| p.is_file())
 }
 

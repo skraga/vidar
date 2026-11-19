@@ -263,6 +263,8 @@ struct Core {
     cfg: Config,
     route: RouteState,
     engine: Option<Engine>,
+    /// The running engine's microphone is a built-in laptop mic (it gets extra gain).
+    laptop_mic: bool,
     view: Arc<Mutex<View>>,
     repaint: Arc<Mutex<Option<eframe::egui::Context>>>,
     /// Restart attempts after a device loss.
@@ -288,7 +290,8 @@ fn models_dirs() -> Vec<PathBuf> {
     {
         v.push(dir.join("models"));
     }
-    v.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../models"));
+    // Development builds run from target\ also find the repo's models.
+    v.extend(vidar_denoise::repo_path("models"));
     v
 }
 
@@ -498,7 +501,8 @@ impl Core {
         self.publish(|v| v.state = RunState::Starting);
         self.status(format!("Starting with {}...", input.name), Tone::Busy);
 
-        let settings = EngineSettings::from_config(&self.cfg, input.is_laptop_mic());
+        self.laptop_mic = input.is_laptop_mic();
+        let settings = EngineSettings::from_config(&self.cfg, self.laptop_mic);
         let (model, active, errors) = if settings.denoise_enabled {
             create_with_fallback(&self.model_spec())
         } else {
@@ -588,7 +592,15 @@ impl Core {
     }
 
     fn stop(&mut self, quiet: bool) {
+        // A pending reconnect must end too, or the watchdog starts the engine again.
         if self.engine.is_none() && !self.route.is_swapped {
+            if self.recover.take().is_some() {
+                self.publish(|v| v.state = RunState::Stopped);
+                if !quiet {
+                    let (s, t) = self.idle_status();
+                    self.status(s, t);
+                }
+            }
             return;
         }
         self.publish(|v| v.state = RunState::Stopping);
@@ -1024,10 +1036,7 @@ impl Core {
                 self.cfg.mic_boost_db = db;
                 self.save_now();
                 if let Some(e) = &self.engine {
-                    let laptop = Self::audio()
-                        .and_then(|a| self.resolve_input(&a))
-                        .is_some_and(|i| i.is_laptop_mic());
-                    let s = EngineSettings::from_config(&self.cfg, laptop);
+                    let s = EngineSettings::from_config(&self.cfg, self.laptop_mic);
                     e.controls().total_gain.set(s.total_gain);
                     e.controls().mic_boost_db.set(s.mic_boost_db);
                 }
@@ -1250,6 +1259,7 @@ fn run(
         cfg,
         route,
         engine: None,
+        laptop_mic: false,
         view,
         repaint,
         recover: None,

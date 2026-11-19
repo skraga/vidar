@@ -30,7 +30,12 @@ pub struct Processor {
     frame: Frame,
     filled: usize,
     was_muted: bool,
+    /// Muted frames left in which the model still runs on silence (see `process_frame`).
+    mute_flush: usize,
 }
+
+/// Longer than the slowest model's delay (DPDFNet, 50 ms = 5 frames), with margin.
+const MUTE_FLUSH_FRAMES: usize = 8;
 
 impl Processor {
     pub fn new(
@@ -62,6 +67,7 @@ impl Processor {
             frame: [0.0; FRAME_SIZE],
             filled: 0,
             was_muted: false,
+            mute_flush: 0,
         }
     }
 
@@ -105,11 +111,8 @@ impl Processor {
 
     fn apply_pending_swaps(&mut self) {
         while let Ok(next) = self.model_rx.try_recv() {
+            // Swapped-in models are freshly created, so no reset (RNNoise's would allocate).
             let old = std::mem::replace(&mut self.model, next);
-            if let Some(mut m) = self.model.take() {
-                m.reset();
-                self.model = Some(m);
-            }
             if let Some(old) = old {
                 // Free the old model off the audio thread; if nobody collects, drop here.
                 if let Err(TrySendError::Full(old) | TrySendError::Disconnected(old)) =
@@ -132,8 +135,18 @@ impl Processor {
                 self.eq.reset();
                 self.bands.reset();
                 self.was_muted = true;
+                self.mute_flush = MUTE_FLUSH_FRAMES;
             }
             self.frame.fill(0.0);
+            // Run the model on silence for a few frames so its delay line holds no speech from
+            // before the mute; otherwise unmuting would replay it. (No reset: RNNoise's allocates.)
+            if self.mute_flush > 0 {
+                self.mute_flush -= 1;
+                if let Some(m) = self.model.as_mut() {
+                    m.process_frame(&mut self.frame);
+                }
+                self.frame.fill(0.0);
+            }
             self.meters.publish(0.0, -100.0, -100.0, -100.0, 0.0);
             self.meters.publish_bands(&[-100.0; BANDS]);
             return;
@@ -289,6 +302,47 @@ mod tests {
             out.extend_from_slice(f)
         });
         assert!(out.iter().all(|&x| x == 0.0));
+    }
+
+    /// Counts the frames it sees and whether any of them held sound.
+    struct Spy {
+        frames: Arc<std::sync::atomic::AtomicUsize>,
+        heard_sound: Arc<std::sync::atomic::AtomicBool>,
+    }
+    impl Denoiser for Spy {
+        fn process_frame(&mut self, f: &mut Frame) -> f64 {
+            self.frames.fetch_add(1, Relaxed);
+            if f.iter().any(|&x| x != 0.0) {
+                self.heard_sound.store(true, Relaxed);
+            }
+            0.0
+        }
+        fn delay_samples(&self) -> usize {
+            0
+        }
+        fn reset(&mut self) {}
+        fn name(&self) -> &'static str {
+            "spy"
+        }
+    }
+
+    #[test]
+    fn mute_flushes_the_model_with_silence_then_stops_running_it() {
+        let frames = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let heard_sound = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (mut p, controls, _, _, _) = setup(Some(Box::new(Spy {
+            frames: frames.clone(),
+            heard_sound: heard_sound.clone(),
+        })));
+        controls.muted.store(true, Relaxed);
+        for _ in 0..20 {
+            p.push_interleaved(&vec![0.5f32; FRAME_SIZE], 1, &mut |_| {});
+        }
+        assert_eq!(frames.load(Relaxed), MUTE_FLUSH_FRAMES);
+        assert!(
+            !heard_sound.load(Relaxed),
+            "muted input must not reach the model"
+        );
     }
 
     #[test]

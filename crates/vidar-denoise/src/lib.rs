@@ -13,6 +13,19 @@ use vidar_dsp::Denoiser;
 #[cfg(feature = "dpdfnet")]
 pub use {dpdfnet::DpdfNet, dpdfnet::Vad, onnx::SpecModel};
 
+/// A path in the source checkout (`relative` to the workspace root), for development builds
+/// that run from `target\`. `None` for a release build running outside the checkout, so an
+/// installed copy never looks in, or loads a DLL from, the folder it was built in.
+pub fn repo_path(relative: &str) -> Option<PathBuf> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let inside = || -> Option<bool> {
+        let root = root.canonicalize().ok()?;
+        let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
+        Some(exe.starts_with(root))
+    };
+    (cfg!(debug_assertions) || inside() == Some(true)).then(|| root.join(relative))
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("model file {0} not found")]
