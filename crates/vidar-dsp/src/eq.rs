@@ -174,6 +174,10 @@ impl Biquad {
     }
 }
 
+/// Samples over which a gain change crossfades from the old curve to the new one
+/// (10 ms at 48 kHz): a preset switch glides instead of clicking.
+pub const EQ_FADE_SAMPLES: usize = 480;
+
 /// The seven-band equaliser. Flat bands are skipped, so a flat EQ costs nothing.
 #[derive(Debug, Clone)]
 pub struct VoiceEq {
@@ -183,6 +187,10 @@ pub struct VoiceEq {
     /// The filter gains that produce them.
     filter_db: [f64; EQ_BANDS],
     bands: [Biquad; EQ_BANDS],
+    /// The filters before the last change, with their memory; set while a crossfade is due.
+    fade_from: Option<([Biquad; EQ_BANDS], [f64; EQ_BANDS])>,
+    /// Scratch for the old curve's output during a crossfade (no allocation on the audio thread).
+    fade_buf: [f32; EQ_FADE_SAMPLES],
 }
 
 impl VoiceEq {
@@ -192,6 +200,8 @@ impl VoiceEq {
             gains_db: [0.0; EQ_BANDS],
             filter_db: [0.0; EQ_BANDS],
             bands: [Biquad::default(); EQ_BANDS],
+            fade_from: None,
+            fade_buf: [0.0; EQ_FADE_SAMPLES],
         };
         for i in 0..EQ_BANDS {
             eq.bands[i] = Biquad::design(KINDS[i], EQ_FREQS_HZ[i], 0.0, sample_rate);
@@ -201,7 +211,8 @@ impl VoiceEq {
 
     /// Set the band gains (clamped to ±[`EQ_MAX_DB`]): the response at each of
     /// [`EQ_POINTS_HZ`]. Nothing is recomputed while the gains stay the same and the filter
-    /// memory is kept, so this can be called every frame while a slider moves. Allocation-free.
+    /// memory is kept, so this can be called every frame while a slider moves. A change is
+    /// crossfaded over the next [`EQ_FADE_SAMPLES`] processed. Allocation-free.
     pub fn set_gains(&mut self, gains_db: [f64; EQ_BANDS]) {
         let target: [f64; EQ_BANDS] = std::array::from_fn(|i| {
             let g = gains_db[i];
@@ -215,6 +226,11 @@ impl VoiceEq {
             return;
         }
         self.gains_db = target;
+        // Fade from what is heard now. If a fade is still pending, its start stays: the
+        // listener has not heard anything in between.
+        if self.fade_from.is_none() {
+            self.fade_from = Some((self.bands, self.filter_db));
+        }
         let filter = if target.iter().all(|&g| g == 0.0) {
             [0.0; EQ_BANDS]
         } else {
@@ -262,15 +278,38 @@ impl VoiceEq {
         self.gains_db
     }
 
+    /// Flat and not fading: [`VoiceEq::process`] would leave the audio unchanged, so callers
+    /// may skip it. A switch to flat is still faded out first.
     pub fn is_flat(&self) -> bool {
-        self.gains_db.iter().all(|&g| g == 0.0)
+        self.fade_from.is_none() && self.gains_db.iter().all(|&g| g == 0.0)
+    }
+
+    /// Run `frame` through the bands in use. Bands at 0 dB are skipped and their memory is
+    /// cleared, so a band switched on later starts from silence instead of from stale samples
+    /// (which would pop).
+    fn run(bands: &mut [Biquad; EQ_BANDS], filter_db: &[f64; EQ_BANDS], frame: &mut [f32]) {
+        for (band, &g) in bands.iter_mut().zip(filter_db) {
+            if g != 0.0 {
+                band.process(frame);
+            } else {
+                band.reset();
+            }
+        }
     }
 
     pub fn process(&mut self, frame: &mut [f32]) {
-        for (band, &g) in self.bands.iter_mut().zip(&self.filter_db) {
-            if g != 0.0 {
-                band.process(frame);
+        if let Some((mut old, old_db)) = self.fade_from.take() {
+            let n = frame.len().min(EQ_FADE_SAMPLES);
+            let faded = &mut self.fade_buf[..n];
+            faded.copy_from_slice(&frame[..n]);
+            Self::run(&mut old, &old_db, faded);
+            Self::run(&mut self.bands, &self.filter_db, frame);
+            for (i, (new, &was)) in frame[..n].iter_mut().zip(faded.iter()).enumerate() {
+                let t = (i + 1) as f32 / n as f32;
+                *new = was + (*new - was) * t;
             }
+        } else {
+            Self::run(&mut self.bands, &self.filter_db, frame);
         }
     }
 
@@ -286,6 +325,7 @@ impl VoiceEq {
 
     pub fn reset(&mut self) {
         self.bands.iter_mut().for_each(Biquad::reset);
+        self.fade_from = None;
     }
 }
 
@@ -326,6 +366,69 @@ mod tests {
         let rms =
             (tail.iter().map(|&v| f64::from(v).powi(2)).sum::<f64>() / tail.len() as f64).sqrt();
         20.0 * (rms / (0.25 / SQRT_2)).log10()
+    }
+
+    fn sine_frame(start: usize) -> Vec<f32> {
+        (start..start + 480)
+            .map(|i| (0.5 * (2.0 * PI * 1000.0 * i as f64 / 48_000.0).sin()) as f32)
+            .collect()
+    }
+
+    /// A preset switch while sound is playing must not jump: the frame after the change
+    /// starts where the old curve was and only reaches the new one at its end.
+    #[test]
+    fn a_change_crossfades_instead_of_jumping() {
+        let mut eq = VoiceEq::new(48_000.0);
+        eq.set_gains([0.0, 0.0, 0.0, -12.0, 0.0, 0.0, 0.0]);
+        for f in 0..20 {
+            eq.process(&mut sine_frame(f * 480));
+        }
+        let mut old = eq.clone();
+        let mut abrupt = eq.clone();
+        eq.set_gains([0.0, 0.0, 0.0, 12.0, 0.0, 0.0, 0.0]);
+        abrupt.set_gains([0.0, 0.0, 0.0, 12.0, 0.0, 0.0, 0.0]);
+        abrupt.fade_from = None;
+
+        let (mut y, mut y_old, mut y_new) = (sine_frame(9600), sine_frame(9600), sine_frame(9600));
+        eq.process(&mut y);
+        old.process(&mut y_old);
+        abrupt.process(&mut y_new);
+        // First sample: almost exactly the old curve. Last sample: exactly the new one.
+        let jump = (y_new[0] - y_old[0]).abs();
+        assert!(
+            (y[0] - y_old[0]).abs() <= jump / 400.0 + 1e-6,
+            "{} vs {}",
+            y[0],
+            y_old[0]
+        );
+        assert_eq!(y[479], y_new[479]);
+        assert!(!eq.is_flat() && eq.fade_from.is_none());
+    }
+
+    /// Switching to Off fades out too, and only then may callers skip the EQ.
+    #[test]
+    fn switching_off_fades_out_before_bypassing() {
+        let mut eq = VoiceEq::new(48_000.0);
+        eq.set_gains([6.0; EQ_BANDS]);
+        eq.process(&mut sine_frame(0));
+        eq.set_gains([0.0; EQ_BANDS]);
+        assert!(!eq.is_flat(), "the fade-out still has to run");
+        eq.process(&mut sine_frame(480));
+        assert!(eq.is_flat());
+    }
+
+    /// A band that is off keeps no memory, so turning it back on cannot replay old samples.
+    #[test]
+    fn bands_that_are_off_forget_their_memory() {
+        let mut eq = VoiceEq::new(48_000.0);
+        eq.set_gains([0.0, 0.0, 0.0, 9.0, 0.0, 0.0, 0.0]);
+        eq.process(&mut sine_frame(0));
+        assert!(eq.bands[3].y1 != 0.0);
+        // (Off, not another band: the overlap correction would nudge band 3 too.)
+        eq.set_gains([0.0; EQ_BANDS]);
+        eq.process(&mut sine_frame(480));
+        let b = eq.bands[3];
+        assert_eq!((b.x1, b.x2, b.y1, b.y2), (0.0, 0.0, 0.0, 0.0));
     }
 
     #[test]
