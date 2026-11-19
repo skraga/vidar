@@ -5,6 +5,19 @@ messages by [git-cliff](https://git-cliff.org) when a release is prepared
 (`cargo xtask release <version>`), and each one is published as that version's GitHub
 release notes.
 
+## 0.3.0 — 2026-11-20
+
+### New
+
+- Native version for Windows 11 on ARM (Snapdragon PCs): `vidar-0.3.0-arm64-setup.exe`
+- Set your microphone's level in Windows from Settings → Microphone, with a warning when the
+  microphone is muted in Windows or overloading
+- Setup installs the Microsoft Visual C++ Runtime when it is missing
+
+### Fixed
+
+- Changing the voice tone no longer clicks, and switching it back on no longer pops
+
 ## 0.2.0 — 2026-11-19
 
 ### New
