@@ -236,6 +236,7 @@ Hand-edited values are clamped to safe ranges on load.
 | `last_update_check` | When the last automatic check ran (seconds since 1970) | `0` |
 | `mic_profiles` | Mode, strength, boost and auto level last used with each microphone, by endpoint ID (with its name). The top-level values are those of the microphone in use | `{}` |
 | `pause_when_unused` | Skip the noise model and send silence while no app records from Vidar AI Microphone | `true` |
+| `cpu_fallback` | How far to step down while the processor cannot keep up: `off`, `voice` (Voice HD to Voice only) or `any` (down to the filter and gate alone) | `any` |
 | `input_endpoint_id`, `input_device_name` | The chosen microphone (empty: the Windows default) | — |
 
 Written by the app, not meant to be edited: `version`, `is_swapped` and `original_mic_id`

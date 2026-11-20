@@ -208,6 +208,8 @@ pub struct View {
     pub pause_when_unused: bool,
     /// Set while the processor is too busy for the chosen mode and a lighter one runs.
     pub cpu_note: Option<String>,
+    /// The `cpu_fallback` setting: "off", "voice" or "any".
+    pub cpu_fallback: String,
     pub mic_boost_db: f64,
     pub vad_threshold: f64,
     pub engine: String,
@@ -242,6 +244,8 @@ pub enum Cmd {
     SetMicMuted(bool),
     /// Pause processing while no app records from Vidar AI Microphone.
     SetPauseWhenUnused(bool),
+    /// How far to step down when the processor is busy: "off", "voice" or "any".
+    SetCpuFallback(String),
     SetBoost(f64),
     SetVad(f64),
     SetEngine(String),
@@ -404,16 +408,30 @@ const CPU_OVER_CHECKS: u32 = 3;
 
 impl CpuGuard {
     /// The modes to fall back through, best first: `Some(model)` or `None` for no model.
-    fn ladder(chosen: Model) -> &'static [Option<Model>] {
-        match chosen {
+    /// `limit` is the `cpu_fallback` setting: `"off"`, `"voice"` or `"any"`.
+    fn ladder(chosen: Model, limit: &str) -> &'static [Option<Model>] {
+        let all: &'static [Option<Model>] = match chosen {
             Model::DpdfNet => &[Some(Model::DpdfNet), Some(Model::RnNoise), None],
             Model::RnNoise => &[Some(Model::RnNoise), None],
-        }
+        };
+        let len = match limit {
+            "off" => 1,
+            // Never below Voice: Voice HD may become Voice, Voice stays Voice.
+            "voice" => all.iter().take_while(|m| m.is_some()).count(),
+            _ => all.len(),
+        };
+        &all[..len]
     }
 
     /// One look at the meters (about once a second). `Some(step)` when the mode should
     /// change to that step.
-    fn check(&mut self, m: &MeterSnapshot, chosen: Model, now: Instant) -> Option<usize> {
+    fn check(
+        &mut self,
+        m: &MeterSnapshot,
+        chosen: Model,
+        limit: &str,
+        now: Instant,
+    ) -> Option<usize> {
         let slow_share = match self.last.replace((now, m.frames, m.slow_frames)) {
             Some((_, frames, slow)) if m.frames > frames + 50 => {
                 (m.slow_frames - slow) as f64 / (m.frames - frames) as f64
@@ -422,7 +440,7 @@ impl CpuGuard {
         };
         let busy = m.load > CPU_LOAD_LIMIT || slow_share > CPU_SLOW_SHARE;
         self.over = if busy { self.over + 1 } else { 0 };
-        let lightest = Self::ladder(chosen).len() - 1;
+        let lightest = Self::ladder(chosen, limit).len() - 1;
 
         if self.over >= CPU_OVER_CHECKS && self.step < lightest {
             self.over = 0;
@@ -801,7 +819,10 @@ impl Core {
         }
         let m = engine.meters().snapshot();
         let chosen = Model::parse(&self.cfg.denoise_engine);
-        if let Some(step) = self.cpu.check(&m, chosen, Instant::now()) {
+        if let Some(step) = self
+            .cpu
+            .check(&m, chosen, &self.cfg.cpu_fallback, Instant::now())
+        {
             self.apply_cpu_step(step);
         }
     }
@@ -810,7 +831,8 @@ impl Core {
     fn apply_cpu_step(&mut self, step: usize) {
         let Some(engine) = &self.engine else { return };
         let chosen = Model::parse(&self.cfg.denoise_engine);
-        let target = CpuGuard::ladder(chosen)[step];
+        let ladder = CpuGuard::ladder(chosen, &self.cfg.cpu_fallback);
+        let target = ladder[step.min(ladder.len() - 1)];
         let (model, active) = match target {
             Some(m) => {
                 let spec = DenoiseSpec {
@@ -1522,6 +1544,24 @@ impl Core {
                 self.sync_profile();
                 self.refresh_mic_volume();
             }
+            Cmd::SetCpuFallback(limit) => {
+                self.cfg.cpu_fallback = limit;
+                self.cfg.sanitize();
+                self.save_now();
+                let limit = self.cfg.cpu_fallback.clone();
+                self.publish(|v| v.cpu_fallback = limit);
+                // Running lighter than the new setting allows: step back up to its limit.
+                let lightest = CpuGuard::ladder(
+                    Model::parse(&self.cfg.denoise_engine),
+                    &self.cfg.cpu_fallback,
+                )
+                .len()
+                    - 1;
+                if self.cpu.step > lightest {
+                    self.cpu.step = lightest;
+                    self.apply_cpu_step(lightest);
+                }
+            }
             Cmd::SetPauseWhenUnused(on) => {
                 self.cfg.pause_when_unused = on;
                 self.save_now();
@@ -1747,6 +1787,7 @@ pub fn spawn(
         idle: false,
         pause_when_unused: cfg.pause_when_unused,
         cpu_note: None,
+        cpu_fallback: cfg.cpu_fallback.clone(),
         mic_boost_db: cfg.mic_boost_db,
         vad_threshold: cfg.vad_threshold,
         engine: cfg.denoise_engine.clone(),
@@ -1948,7 +1989,7 @@ mod tests {
             *t += Duration::from_secs(1);
             n.0 += 100;
             n.1 += (100.0 * slow_share) as u64;
-            if let Some(s) = g.check(&meters(n.0, n.1, load), Model::DpdfNet, *t) {
+            if let Some(s) = g.check(&meters(n.0, n.1, load), Model::DpdfNet, "any", *t) {
                 steps.push(s);
             }
         }
@@ -1991,10 +2032,33 @@ mod tests {
         let mut steps = Vec::new();
         for i in 1..=4u64 {
             t += Duration::from_secs(1);
-            steps.extend(g.check(&meters(i * 100, 0, 0.95), Model::RnNoise, t));
+            steps.extend(g.check(&meters(i * 100, 0, 0.95), Model::RnNoise, "any", t));
         }
         assert_eq!(steps, [1]);
-        assert_eq!(CpuGuard::ladder(Model::RnNoise)[1], None);
+        assert_eq!(CpuGuard::ladder(Model::RnNoise, "any")[1], None);
+    }
+
+    /// The setting decides how far it may go: never, to Voice, or all the way.
+    #[test]
+    fn the_setting_limits_the_steps() {
+        use Model::{DpdfNet as Hd, RnNoise as Voice};
+        assert_eq!(CpuGuard::ladder(Hd, "off"), [Some(Hd)]);
+        assert_eq!(CpuGuard::ladder(Hd, "voice"), [Some(Hd), Some(Voice)]);
+        assert_eq!(CpuGuard::ladder(Hd, "any"), [Some(Hd), Some(Voice), None]);
+        assert_eq!(CpuGuard::ladder(Voice, "voice"), [Some(Voice)]);
+        assert_eq!(CpuGuard::ladder(Voice, "any"), [Some(Voice), None]);
+
+        // Busy for a long time: "off" never changes, "voice" stops at Voice.
+        for (limit, expected) in [("off", vec![]), ("voice", vec![1]), ("any", vec![1, 2])] {
+            let mut g = CpuGuard::default();
+            let mut t = Instant::now();
+            let mut steps = Vec::new();
+            for i in 1..=30u64 {
+                t += Duration::from_secs(1);
+                steps.extend(g.check(&meters(i * 100, 0, 0.95), Hd, limit, t));
+            }
+            assert_eq!(steps, expected, "{limit}");
+        }
     }
 
     /// Paused or muted, the meters stand still; that must not count as busy or as room.

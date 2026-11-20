@@ -527,6 +527,21 @@ const TIP_AUTOSTART: Tip = (
     "Start with Windows",
     "Starts Vidar in the tray when you sign in. Noise cancellation stays off until you turn it on.",
 );
+const CPU_HELP: Tip = ("When the processor is busy", "If your processor cannot keep up with the chosen mode, your voice would crackle or drop out. Vidar can switch to a lighter mode for a while instead: Voice HD to Voice, and if that is still too much, to the filter and gate alone, without the noise model. It says so under Mode, and tries the better mode again after a few minutes.");
+const CPU_TIPS: [Tip; 3] = [
+    (
+        "Keep my mode",
+        "Never switch. If the processor cannot keep up, your voice may crackle.",
+    ),
+    (
+        "Down to Voice",
+        "Voice HD may switch to Voice, but noise removal always stays on.",
+    ),
+    (
+        "As far as needed",
+        "Voice HD to Voice, then to the filter and gate alone if even Voice is too much. Recommended.",
+    ),
+];
 const TIP_PAUSE: Tip = ("Pause when no app is listening", "While no app records from Vidar AI Microphone, Vidar stops cleaning (the noise model is the part that uses the processor) and starts again the moment an app opens the microphone. Turn it off if an app misses the start of what you say.");
 const TIP_RAW: Tip = ("Raw microphone signal", "Gives Vidar your microphone before Windows and the microphone's driver apply their own effects, such as built-in noise suppression or automatic volume. Usually sounds more natural with Vidar; turn it off if your microphone sounds worse. Audio restarts briefly if Vidar is on.");
 const TIP_INSTALL: Tip = ("Virtual microphone", "Vidar AI Microphone runs on the VB-CABLE driver by VB-Audio (donationware). Installing it asks Windows for permission once; your speakers and microphone stay as they are.");
@@ -3477,6 +3492,20 @@ impl VidarWindow {
             ) {
                 self.handle
                     .send(Cmd::SetPauseWhenUnused(!v.pause_when_unused));
+            }
+            ui.add_space(space::XS);
+            section_help(ui, p, "When the processor is busy", CPU_HELP);
+            const LIMITS: [&str; 3] = ["off", "voice", "any"];
+            let sel = LIMITS.iter().position(|l| *l == v.cpu_fallback);
+            if let Some(i) = segmented(
+                ui,
+                p,
+                &["Keep my mode", "Down to Voice", "As far as needed"],
+                sel,
+                true,
+                &CPU_TIPS,
+            ) {
+                self.handle.send(Cmd::SetCpuFallback(LIMITS[i].into()));
             }
             ui.add_space(space::XXS);
             if link(ui, p, "How to use Vidar in a specific app").clicked() {

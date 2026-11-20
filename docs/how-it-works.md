@@ -224,7 +224,9 @@ built-in noise suppression or automatic volume, which can work against Vidar's p
   seconds, Vidar switches to the next lighter mode (Voice HD, then Voice, then the filter and
   gate alone) and says so under Mode. After two minutes it tries the better mode again; if
   that is too much within ten minutes, the next wait doubles, up to half an hour. Choosing a
-  mode yourself starts over.
+  mode yourself starts over. Settings → *When the processor is busy* limits how far it goes:
+  *Keep my mode* (never), *Down to Voice* (noise removal always stays on) or *As far as
+  needed* (the default).
 
 ## Settings for each microphone
 

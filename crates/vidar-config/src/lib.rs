@@ -99,6 +99,10 @@ pub struct Config {
     /// Skip the noise model (and send silence) while no app records from Vidar AI
     /// Microphone, to save processor time and battery.
     pub pause_when_unused: bool,
+    /// How far Vidar may step down while the processor cannot keep up: `"off"` (never),
+    /// `"voice"` (Voice HD to Voice, no further) or `"any"` (down to the filter and gate
+    /// alone).
+    pub cpu_fallback: String,
 
     /// Keys this version does not know about, kept as-is.
     #[serde(flatten)]
@@ -128,6 +132,7 @@ impl Default for Config {
             last_update_check: 0,
             mic_profiles: std::collections::BTreeMap::new(),
             pause_when_unused: true,
+            cpu_fallback: "any".into(),
             extra: Map::new(),
         }
     }
@@ -199,6 +204,9 @@ impl Config {
         };
         if !matches!(self.ui_theme.as_str(), "auto" | "light" | "dark") {
             self.ui_theme = "auto".into();
+        }
+        if !matches!(self.cpu_fallback.as_str(), "off" | "voice" | "any") {
+            self.cpu_fallback = "any".into();
         }
         self.vad_threshold = finite_or(self.vad_threshold, 0.70).clamp(0.05, 0.99);
         self.mic_boost_db = finite_or(self.mic_boost_db, 0.0).clamp(0.0, 30.0);
