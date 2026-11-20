@@ -128,7 +128,8 @@ impl Processor {
         self.apply_pending_swaps();
         let c = &self.controls;
 
-        if c.muted.load(Relaxed) {
+        // Muted, or no app is listening: silence, and after a short flush no model work.
+        if c.muted.load(Relaxed) || c.idle.load(Relaxed) {
             if !self.was_muted {
                 self.gate.reset();
                 self.hpf.reset();
@@ -152,6 +153,8 @@ impl Processor {
             return;
         }
         self.was_muted = false;
+        // Reading the clock is a few tens of nanoseconds and allocates nothing.
+        let started = std::time::Instant::now();
 
         self.gate.threshold = c.vad_threshold.get();
         self.gate.close_threshold = c.vad_close_threshold.get();
@@ -205,6 +208,9 @@ impl Processor {
         );
         // What apps hear, split into bands, for the live logo.
         self.meters.publish_bands(&self.bands.analyze(&self.frame));
+        // Share of the frame's 10 ms (480 samples at 48 kHz) the processing took.
+        self.meters
+            .publish_load(started.elapsed().as_secs_f64() / 0.010);
     }
 
     pub fn active_model(&self) -> Option<&'static str> {
@@ -343,6 +349,45 @@ mod tests {
             !heard_sound.load(Relaxed),
             "muted input must not reach the model"
         );
+    }
+
+    /// Nobody listening works like mute: silence out, the model stops after its flush, and
+    /// it runs again (on the new sound) as soon as someone listens.
+    #[test]
+    fn idle_stops_the_model_and_resumes_it() {
+        let frames = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let heard_sound = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (mut p, controls, _, _, _) = setup(Some(Box::new(Spy {
+            frames: frames.clone(),
+            heard_sound: heard_sound.clone(),
+        })));
+        controls.idle.store(true, Relaxed);
+        let mut out = Vec::new();
+        for _ in 0..20 {
+            p.push_interleaved(&vec![0.5f32; FRAME_SIZE], 1, &mut |f| out.push(f[0]));
+        }
+        assert_eq!(frames.load(Relaxed), MUTE_FLUSH_FRAMES);
+        assert!(out.iter().all(|&x| x == 0.0), "idle sends silence");
+        assert!(
+            !controls.muted.load(Relaxed),
+            "the user's mute is untouched"
+        );
+
+        controls.idle.store(false, Relaxed);
+        p.push_interleaved(&vec![0.5f32; FRAME_SIZE], 1, &mut |_| {});
+        assert_eq!(frames.load(Relaxed), MUTE_FLUSH_FRAMES + 1);
+        assert!(heard_sound.load(Relaxed));
+    }
+
+    /// Every processed frame reports its share of the 10 ms budget.
+    #[test]
+    fn processing_time_is_measured() {
+        let (mut p, _, meters, _, _) = setup(None);
+        for _ in 0..10 {
+            p.push_interleaved(&vec![0.1f32; FRAME_SIZE], 1, &mut |_| {});
+        }
+        let load = meters.snapshot().load;
+        assert!(load > 0.0 && load < 1.0, "load {load}");
     }
 
     #[test]

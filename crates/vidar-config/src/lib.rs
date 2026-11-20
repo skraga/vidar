@@ -92,6 +92,14 @@ pub struct Config {
     /// When the last automatic check ran (seconds since 1970), so restarts do not re-check.
     pub last_update_check: u64,
 
+    /// Mode, strength, boost and auto level as last used with each microphone, by endpoint
+    /// ID. The fields above hold the values of the microphone in use; switching microphones
+    /// stores them here and loads the new microphone's.
+    pub mic_profiles: std::collections::BTreeMap<String, MicProfile>,
+    /// Skip the noise model (and send silence) while no app records from Vidar AI
+    /// Microphone, to save processor time and battery.
+    pub pause_when_unused: bool,
+
     /// Keys this version does not know about, kept as-is.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -118,8 +126,65 @@ impl Default for Config {
             ui_theme: "auto".into(),
             check_updates: true,
             last_update_check: 0,
+            mic_profiles: std::collections::BTreeMap::new(),
+            pause_when_unused: true,
             extra: Map::new(),
         }
+    }
+}
+
+/// The settings remembered for one microphone (see [`Config::mic_profiles`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MicProfile {
+    /// The microphone's name when last used, for people reading the file.
+    pub name: String,
+    pub denoise_engine: String,
+    pub vad_threshold: f64,
+    pub mic_boost_db: f64,
+    pub auto_level: bool,
+}
+
+impl Default for MicProfile {
+    fn default() -> Self {
+        let c = Config::default();
+        Self {
+            name: String::new(),
+            denoise_engine: c.denoise_engine,
+            vad_threshold: c.vad_threshold,
+            mic_boost_db: c.mic_boost_db,
+            auto_level: c.auto_level,
+        }
+    }
+}
+
+impl Config {
+    /// Store the current mode, strength, boost and auto level for microphone `id`.
+    pub fn remember_mic(&mut self, id: &str, name: &str) {
+        self.mic_profiles.insert(
+            id.to_string(),
+            MicProfile {
+                name: name.to_string(),
+                denoise_engine: self.denoise_engine.clone(),
+                vad_threshold: self.vad_threshold,
+                mic_boost_db: self.mic_boost_db,
+                auto_level: self.auto_level,
+            },
+        );
+    }
+
+    /// Make microphone `id`'s remembered settings current. False (and nothing changed) for a
+    /// microphone used for the first time: it starts from the current settings.
+    pub fn recall_mic(&mut self, id: &str) -> bool {
+        let Some(p) = self.mic_profiles.get(id).cloned() else {
+            return false;
+        };
+        self.denoise_engine = p.denoise_engine;
+        self.vad_threshold = p.vad_threshold;
+        self.mic_boost_db = p.mic_boost_db;
+        self.auto_level = p.auto_level;
+        self.sanitize();
+        true
     }
 }
 
@@ -153,6 +218,16 @@ impl Config {
             if id.as_deref().is_some_and(|s| s.trim().is_empty()) {
                 *id = None;
             }
+        }
+        self.mic_profiles.retain(|id, _| !id.trim().is_empty());
+        for p in self.mic_profiles.values_mut() {
+            p.denoise_engine = if p.denoise_engine.trim().eq_ignore_ascii_case("dpdfnet") {
+                "dpdfnet".into()
+            } else {
+                "rnnoise".into()
+            };
+            p.vad_threshold = finite_or(p.vad_threshold, 0.70).clamp(0.05, 0.99);
+            p.mic_boost_db = finite_or(p.mic_boost_db, 0.0).clamp(0.0, 30.0);
         }
     }
 }
@@ -246,6 +321,49 @@ mod tests {
         let ok = r#"{"eq_custom_db":[1.0,2.0,3.0,4.0,5.0,6.0,7.0]}"#;
         let c: Config = serde_json::from_str(ok).unwrap();
         assert_eq!(c.eq_custom_db, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]);
+    }
+
+    #[test]
+    fn each_microphone_keeps_its_own_settings() {
+        // Headset: Voice, Strong.
+        let mut c = Config {
+            denoise_engine: "rnnoise".into(),
+            vad_threshold: 0.82,
+            ..Config::default()
+        };
+        c.remember_mic("{headset}", "Headset");
+        // Laptop mic, first time: starts from the current values, then gets its own.
+        assert!(!c.recall_mic("{laptop}"));
+        assert_eq!(c.vad_threshold, 0.82);
+        c.denoise_engine = "dpdfnet".into();
+        c.mic_boost_db = 10.0;
+        c.auto_level = true;
+        c.remember_mic("{laptop}", "Laptop");
+
+        assert!(c.recall_mic("{headset}"));
+        assert_eq!(
+            (
+                c.denoise_engine.as_str(),
+                c.vad_threshold,
+                c.mic_boost_db,
+                c.auto_level
+            ),
+            ("rnnoise", 0.82, 0.0, false)
+        );
+        assert!(c.recall_mic("{laptop}"));
+        assert_eq!(
+            (c.denoise_engine.as_str(), c.mic_boost_db, c.auto_level),
+            ("dpdfnet", 10.0, true)
+        );
+
+        // Survives the file, and a hand-edited profile is sanitised like the rest.
+        let json = serde_json::to_string(&c).unwrap();
+        let mut back: Config = serde_json::from_str(&json).unwrap();
+        back.sanitize();
+        assert_eq!(back.mic_profiles, c.mic_profiles);
+        back.mic_profiles.get_mut("{laptop}").unwrap().mic_boost_db = f64::NAN;
+        back.sanitize();
+        assert_eq!(back.mic_profiles["{laptop}"].mic_boost_db, 0.0);
     }
 
     #[test]

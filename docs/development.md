@@ -234,6 +234,8 @@ Hand-edited values are clamped to safe ranges on load.
 | `ui_theme` | `auto`, `light` or `dark` | `auto` |
 | `check_updates` | Ask GitHub for the latest version about once a day | `true` |
 | `last_update_check` | When the last automatic check ran (seconds since 1970) | `0` |
+| `mic_profiles` | Mode, strength, boost and auto level last used with each microphone, by endpoint ID (with its name). The top-level values are those of the microphone in use | `{}` |
+| `pause_when_unused` | Skip the noise model and send silence while no app records from Vidar AI Microphone | `true` |
 | `input_endpoint_id`, `input_device_name` | The chosen microphone (empty: the Windows default) | — |
 
 Written by the app, not meant to be edited: `version`, `is_swapped` and `original_mic_id`

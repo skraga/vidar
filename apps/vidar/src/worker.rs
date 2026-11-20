@@ -202,6 +202,12 @@ pub struct View {
     /// has no volume control or none is connected. Re-read every few seconds, since other
     /// apps (Discord, Teams) may change it.
     pub mic_volume: Option<vidar_win::sys::EndpointVolume>,
+    /// Running, but no app records from Vidar AI Microphone, so processing is paused.
+    pub idle: bool,
+    /// Pause processing while no app listens (setting).
+    pub pause_when_unused: bool,
+    /// Set while the processor is too busy for the chosen mode and a lighter one runs.
+    pub cpu_note: Option<String>,
     pub mic_boost_db: f64,
     pub vad_threshold: f64,
     pub engine: String,
@@ -234,6 +240,8 @@ pub enum Cmd {
     SetMicVolume(f32),
     /// Mute or unmute the microphone in Windows.
     SetMicMuted(bool),
+    /// Pause processing while no app records from Vidar AI Microphone.
+    SetPauseWhenUnused(bool),
     SetBoost(f64),
     SetVad(f64),
     SetEngine(String),
@@ -319,6 +327,15 @@ struct Core {
     engine_input: Option<String>,
     /// When the microphone's Windows volume was last read.
     mic_volume_at: Instant,
+    /// The microphone whose settings are current (its `mic_profiles` entry is kept in step).
+    profile_mic: Option<String>,
+    /// No app records from Vidar AI Microphone (the engine is paused), and when that was
+    /// last checked.
+    idle: bool,
+    listeners_at: Instant,
+    /// Steps down to a lighter mode while the processor cannot keep up; checked at `cpu_at`.
+    cpu: CpuGuard,
+    cpu_at: Instant,
     view: Arc<Mutex<View>>,
     repaint: Arc<Mutex<Option<eframe::egui::Context>>>,
     /// Restart attempts after a device loss.
@@ -350,6 +367,99 @@ fn unix_now() -> u64 {
 }
 
 const UPDATE_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// The mode's name in the window.
+fn mode_name(m: Model) -> &'static str {
+    match m {
+        Model::DpdfNet => "Voice HD",
+        Model::RnNoise => "Voice",
+    }
+}
+
+/// What the noise removal falls back to while the processor cannot keep up: from Voice HD to
+/// Voice, then to no model, and back up once there is room again.
+#[derive(Debug, Default)]
+struct CpuGuard {
+    /// 0 = the chosen mode; each step is one lighter (see [`CpuGuard::ladder`]).
+    step: usize,
+    /// When the current step started; the next try upwards waits `retry` from here.
+    since: Option<Instant>,
+    retry: Duration,
+    /// When the last step upwards happened: falling again soon after doubles the wait.
+    last_up: Option<Instant>,
+    /// Counters at the last check, for the share of slow frames in between.
+    last: Option<(Instant, u64, u64)>,
+    /// Checks in a row that found the processor too busy.
+    over: u32,
+}
+
+/// First wait before trying a better mode again, and the longest.
+const CPU_RETRY_FIRST: Duration = Duration::from_secs(120);
+const CPU_RETRY_MAX: Duration = Duration::from_secs(30 * 60);
+/// Too busy: smoothed frame time above this share of the 10 ms, or more slow frames than
+/// this share, for `CPU_OVER_CHECKS` checks (seconds) in a row.
+const CPU_LOAD_LIMIT: f64 = 0.8;
+const CPU_SLOW_SHARE: f64 = 0.1;
+const CPU_OVER_CHECKS: u32 = 3;
+
+impl CpuGuard {
+    /// The modes to fall back through, best first: `Some(model)` or `None` for no model.
+    fn ladder(chosen: Model) -> &'static [Option<Model>] {
+        match chosen {
+            Model::DpdfNet => &[Some(Model::DpdfNet), Some(Model::RnNoise), None],
+            Model::RnNoise => &[Some(Model::RnNoise), None],
+        }
+    }
+
+    /// One look at the meters (about once a second). `Some(step)` when the mode should
+    /// change to that step.
+    fn check(&mut self, m: &MeterSnapshot, chosen: Model, now: Instant) -> Option<usize> {
+        let slow_share = match self.last.replace((now, m.frames, m.slow_frames)) {
+            Some((_, frames, slow)) if m.frames > frames + 50 => {
+                (m.slow_frames - slow) as f64 / (m.frames - frames) as f64
+            }
+            _ => 0.0,
+        };
+        let busy = m.load > CPU_LOAD_LIMIT || slow_share > CPU_SLOW_SHARE;
+        self.over = if busy { self.over + 1 } else { 0 };
+        let lightest = Self::ladder(chosen).len() - 1;
+
+        if self.over >= CPU_OVER_CHECKS && self.step < lightest {
+            self.over = 0;
+            self.step += 1;
+            // Falling again within ten minutes of going up: wait longer before the next try.
+            self.retry = match self.last_up {
+                Some(t) if now.duration_since(t) < Duration::from_secs(600) => {
+                    (self.retry * 2).clamp(CPU_RETRY_FIRST, CPU_RETRY_MAX)
+                }
+                _ => CPU_RETRY_FIRST,
+            };
+            self.since = Some(now);
+            // The meters still hold the old mode's timing; start counting afresh.
+            self.last = None;
+            return Some(self.step);
+        }
+        if self.step > 0
+            && !busy
+            && self
+                .since
+                .is_some_and(|t| now.duration_since(t) >= self.retry)
+        {
+            self.step -= 1;
+            self.since = Some(now);
+            self.last_up = Some(now);
+            self.last = None;
+            return Some(self.step);
+        }
+        None
+    }
+
+    /// Forget the meters' history while paused or muted (they are not updated then).
+    fn pause(&mut self) {
+        self.last = None;
+        self.over = 0;
+    }
+}
 
 fn models_dirs() -> Vec<PathBuf> {
     let mut v = Vec::new();
@@ -511,10 +621,10 @@ impl Core {
             v.cable_installed = installed;
             v.cable_names = names;
         });
+        // A new Windows default may be another microphone, with settings of its own.
+        self.sync_profile();
     }
 
-    /// The microphone to open: the user's pick, else the Windows default unless that is
-    /// virtual (the cable while routed), else the remembered or best physical mic.
     /// The physical microphone whose Windows volume the window shows: the one the engine
     /// opened while it runs, otherwise the one it would open.
     fn mic_volume_target(&self, audio: &WinAudio) -> Option<String> {
@@ -556,6 +666,8 @@ impl Core {
         self.refresh_mic_volume();
     }
 
+    /// The microphone to open: the user's pick, else the Windows default unless that is
+    /// virtual (the cable while routed), else the remembered or best physical mic.
     fn resolve_input(&self, audio: &WinAudio) -> Option<Endpoint> {
         let caps = audio.endpoints(Flow::Capture);
         if let Some(e) = resolve_saved(
@@ -587,6 +699,147 @@ impl Core {
         }
     }
 
+    // ------------------------------------------------------------ per-microphone settings
+
+    /// Make microphone `id` the one whose settings are current: load what was used with it
+    /// last time, or, the first time, give it the current settings.
+    fn switch_profile(&mut self, id: &str, name: &str) {
+        if self.profile_mic.as_deref() == Some(id) {
+            return;
+        }
+        self.profile_mic = Some(id.to_string());
+        if self.cfg.recall_mic(id) {
+            info!("using the settings remembered for {name}");
+            let c = &self.cfg;
+            let (engine, vad, boost, auto) = (
+                c.denoise_engine.clone(),
+                c.vad_threshold,
+                c.mic_boost_db,
+                c.auto_level,
+            );
+            self.publish(|v| {
+                v.engine = engine;
+                v.vad_threshold = vad;
+                v.mic_boost_db = boost;
+                v.auto_level = auto;
+            });
+        } else {
+            self.cfg.remember_mic(id, name);
+        }
+        self.save_later();
+    }
+
+    /// While stopped: follow the microphone Vidar would open (a new pick, or a new Windows
+    /// default). While running the microphone cannot change.
+    fn sync_profile(&mut self) {
+        if self.engine.is_some() {
+            return;
+        }
+        if let Some(e) = Self::audio().and_then(|a| self.resolve_input(&a)) {
+            self.switch_profile(&e.id, &e.name);
+        }
+    }
+
+    /// Store a changed setting for the current microphone too.
+    fn remember_profile(&mut self) {
+        if let Some(id) = self.profile_mic.clone() {
+            let name = self
+                .cfg
+                .mic_profiles
+                .get(&id)
+                .map(|p| p.name.clone())
+                .unwrap_or_default();
+            self.cfg.remember_mic(&id, &name);
+        }
+    }
+
+    // ------------------------------------------------------------ nobody listening
+
+    /// Pause the engine while no app records from Vidar AI Microphone, resume as soon as one
+    /// does. Checked a few times a second; when Windows cannot say, Vidar keeps working.
+    fn check_listeners(&mut self) {
+        self.listeners_at = Instant::now();
+        let Some(engine) = &self.engine else { return };
+        let idle = self.cfg.pause_when_unused
+            && Self::audio().and_then(|a| {
+                let id = match &self.cfg.cable_capture_id {
+                    Some(id) => id.clone(),
+                    None => cable_capture(&a, None)?.id,
+                };
+                a.in_use(&id)
+            }) == Some(false);
+        if idle != self.idle {
+            self.idle = idle;
+            engine.controls().idle.store(idle, Relaxed);
+            info!(
+                "{}",
+                if idle {
+                    "no app is listening: paused"
+                } else {
+                    "an app is listening: resumed"
+                }
+            );
+            self.publish(|v| v.idle = idle);
+        }
+    }
+
+    fn set_idle_off(&mut self) {
+        self.idle = false;
+        self.publish(|v| v.idle = false);
+    }
+
+    // ------------------------------------------------------------ processor too busy
+
+    /// About once a second while running: step to a lighter mode if the processor cannot
+    /// keep up, and back once it has had room for a while.
+    fn check_cpu(&mut self) {
+        let Some(engine) = &self.engine else { return };
+        let muted = engine.controls().muted.load(Relaxed);
+        if self.idle || muted {
+            self.cpu.pause();
+            return;
+        }
+        let m = engine.meters().snapshot();
+        let chosen = Model::parse(&self.cfg.denoise_engine);
+        if let Some(step) = self.cpu.check(&m, chosen, Instant::now()) {
+            self.apply_cpu_step(step);
+        }
+    }
+
+    /// Run the mode `step` levels below the chosen one (0 = the chosen mode).
+    fn apply_cpu_step(&mut self, step: usize) {
+        let Some(engine) = &self.engine else { return };
+        let chosen = Model::parse(&self.cfg.denoise_engine);
+        let target = CpuGuard::ladder(chosen)[step];
+        let (model, active) = match target {
+            Some(m) => {
+                let spec = DenoiseSpec {
+                    engine: m,
+                    ..self.model_spec()
+                };
+                let (model, active, _) = create_with_fallback(&spec);
+                (model, active)
+            }
+            None => (None, None),
+        };
+        engine.set_model(model);
+        let lighter = active.map_or("only the filter and gate", mode_name);
+        let note = (step > 0).then(|| {
+            format!(
+                "Your processor is too busy for {}: using {lighter} until it has room again",
+                mode_name(chosen)
+            )
+        });
+        warn!(
+            "processor load: now {lighter} (step {step} below {})",
+            chosen.label()
+        );
+        self.publish(|v| {
+            v.active_model = active.map(|m| m.as_str());
+            v.cpu_note = note;
+        });
+    }
+
     fn start(&mut self) {
         if self.engine.is_some() {
             return;
@@ -613,6 +866,14 @@ impl Core {
 
         self.laptop_mic = input.is_laptop_mic();
         self.engine_input = Some(input.id.clone());
+        // This microphone's own mode, strength, boost and auto level.
+        self.switch_profile(&input.id, &input.name);
+        self.cpu = CpuGuard::default();
+        self.idle = false;
+        self.publish(|v| {
+            v.cpu_note = None;
+            v.idle = false;
+        });
         let settings = EngineSettings::from_config(&self.cfg, self.laptop_mic);
         let (model, active, errors) = if settings.denoise_enabled {
             create_with_fallback(&self.model_spec())
@@ -723,11 +984,15 @@ impl Core {
         }
         self.restore_mic();
         self.recover = None;
+        self.idle = false;
+        self.cpu = CpuGuard::default();
         self.publish(|v| {
             v.state = RunState::Stopped;
             v.meters = None;
             v.live = None;
             v.active_model = None;
+            v.idle = false;
+            v.cpu_note = None;
         });
         if !quiet {
             let (s, t) = self.idle_status();
@@ -756,6 +1021,7 @@ impl Core {
             if let Ok(mut v) = self.view.lock() {
                 v.live = None;
             }
+            self.set_idle_off();
             self.restore_mic();
             let attempts = self.recover.map_or(0, |(_, n)| n);
             self.recover = Some((Instant::now(), attempts + 1));
@@ -1253,7 +1519,14 @@ impl Core {
                 self.cfg.input_device_name = name;
                 self.save_now();
                 self.publish(|v| v.selected_input = id);
+                self.sync_profile();
                 self.refresh_mic_volume();
+            }
+            Cmd::SetPauseWhenUnused(on) => {
+                self.cfg.pause_when_unused = on;
+                self.save_now();
+                self.publish(|v| v.pause_when_unused = on);
+                self.check_listeners();
             }
             Cmd::SetMicVolume(level) => {
                 self.change_mic_volume(|a, id| a.set_volume(id, level));
@@ -1263,6 +1536,7 @@ impl Core {
             }
             Cmd::SetBoost(db) => {
                 self.cfg.mic_boost_db = db;
+                self.remember_profile();
                 self.save_now();
                 if let Some(e) = &self.engine {
                     let s = EngineSettings::from_config(&self.cfg, self.laptop_mic);
@@ -1274,6 +1548,7 @@ impl Core {
             Cmd::SetVad(t) => {
                 let t = (t * 100.0).round() / 100.0;
                 self.cfg.vad_threshold = t;
+                self.remember_profile();
                 if let Some(e) = &self.engine {
                     e.controls().set_vad_threshold(t);
                 }
@@ -1283,8 +1558,14 @@ impl Core {
             Cmd::SetEngine(name) => {
                 self.cfg.denoise_engine = name.clone();
                 self.cfg.sanitize();
+                self.remember_profile();
                 self.save_now();
-                self.publish(|v| v.engine = name);
+                // An explicit choice: forget any step down for a busy processor.
+                self.cpu = CpuGuard::default();
+                self.publish(|v| {
+                    v.engine = name;
+                    v.cpu_note = None;
+                });
                 if let Some(e) = &self.engine {
                     let (model, active, errors) = create_with_fallback(&self.model_spec());
                     e.set_model(model);
@@ -1342,6 +1623,7 @@ impl Core {
             Cmd::StopTest => self.test_cancel.store(true, Relaxed),
             Cmd::SetAutoLevel(on) => {
                 self.cfg.auto_level = on;
+                self.remember_profile();
                 self.save_now();
                 if let Some(e) = &self.engine {
                     e.controls().auto_level.store(on, Relaxed);
@@ -1462,6 +1744,9 @@ pub fn spawn(
         inputs: Vec::new(),
         selected_input: cfg.input_endpoint_id.clone(),
         mic_volume: None,
+        idle: false,
+        pause_when_unused: cfg.pause_when_unused,
+        cpu_note: None,
         mic_boost_db: cfg.mic_boost_db,
         vad_threshold: cfg.vad_threshold,
         engine: cfg.denoise_engine.clone(),
@@ -1521,6 +1806,11 @@ fn run(
         laptop_mic: false,
         engine_input: None,
         mic_volume_at: Instant::now(),
+        profile_mic: None,
+        idle: false,
+        listeners_at: Instant::now(),
+        cpu: CpuGuard::default(),
+        cpu_at: Instant::now(),
         view,
         repaint,
         recover: None,
@@ -1589,6 +1879,14 @@ fn run(
         if core.mic_volume_at.elapsed() > Duration::from_secs(2) {
             core.refresh_mic_volume();
         }
+        // An app that starts recording should hear its first words, so check often.
+        if core.listeners_at.elapsed() >= Duration::from_millis(250) {
+            core.check_listeners();
+        }
+        if core.cpu_at.elapsed() >= Duration::from_secs(1) {
+            core.cpu_at = Instant::now();
+            core.check_cpu();
+        }
         core.check_health();
     }
     info!("worker stopped");
@@ -1610,4 +1908,101 @@ fn speech_probabilities(samples: &[f32]) -> Vec<f64> {
             rn.process_frame(&mut f)
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn meters(frames: u64, slow: u64, load: f64) -> MeterSnapshot {
+        MeterSnapshot {
+            speech_prob: 0.0,
+            out_peak_db: -100.0,
+            out_rms_db: -100.0,
+            in_peak_db: -100.0,
+            gate_gain: 1.0,
+            bands: [-100.0; vidar_dsp::BANDS],
+            frames,
+            load,
+            slow_frames: slow,
+            capture_glitches: 0,
+            underruns: 0,
+            overruns: 0,
+            drift_ppm: 0,
+            errors: 0,
+        }
+    }
+
+    /// Feed one check per second for `secs` seconds, with this load and share of slow
+    /// frames. Returns every step change.
+    fn run(
+        g: &mut CpuGuard,
+        t: &mut Instant,
+        n: &mut (u64, u64),
+        secs: u32,
+        load: f64,
+        slow_share: f64,
+    ) -> Vec<usize> {
+        let mut steps = Vec::new();
+        for _ in 0..secs {
+            *t += Duration::from_secs(1);
+            n.0 += 100;
+            n.1 += (100.0 * slow_share) as u64;
+            if let Some(s) = g.check(&meters(n.0, n.1, load), Model::DpdfNet, *t) {
+                steps.push(s);
+            }
+        }
+        steps
+    }
+
+    #[test]
+    fn a_busy_processor_steps_down_and_comes_back_up() {
+        let (mut g, mut t, mut n) = (CpuGuard::default(), Instant::now(), (0, 0));
+        // A quiet processor: nothing changes.
+        assert!(run(&mut g, &mut t, &mut n, 30, 0.12, 0.0).is_empty());
+        // A short spike is not enough.
+        assert!(run(&mut g, &mut t, &mut n, 2, 0.95, 0.0).is_empty());
+        assert!(run(&mut g, &mut t, &mut n, 5, 0.12, 0.0).is_empty());
+        // Busy for a few seconds: Voice HD -> Voice, then Voice -> no model.
+        assert_eq!(run(&mut g, &mut t, &mut n, 4, 0.95, 0.0), [1]);
+        assert_eq!(run(&mut g, &mut t, &mut n, 4, 0.9, 0.5), [2]);
+        // Never lighter than no model.
+        assert!(run(&mut g, &mut t, &mut n, 10, 0.95, 0.5).is_empty());
+        // Room again: back up one step after two minutes, then the next.
+        assert_eq!(run(&mut g, &mut t, &mut n, 125, 0.05, 0.0), [1]);
+        assert_eq!(run(&mut g, &mut t, &mut n, 125, 0.05, 0.0), [0]);
+    }
+
+    #[test]
+    fn falling_again_soon_waits_longer() {
+        let (mut g, mut t, mut n) = (CpuGuard::default(), Instant::now(), (0, 0));
+        assert_eq!(run(&mut g, &mut t, &mut n, 4, 0.95, 0.0), [1]);
+        assert_eq!(run(&mut g, &mut t, &mut n, 121, 0.1, 0.0), [0]);
+        // Too busy again right after going back up: down, and now four minutes to wait.
+        assert_eq!(run(&mut g, &mut t, &mut n, 4, 0.95, 0.0), [1]);
+        assert!(run(&mut g, &mut t, &mut n, 200, 0.1, 0.0).is_empty());
+        assert_eq!(run(&mut g, &mut t, &mut n, 50, 0.1, 0.0), [0]);
+    }
+
+    #[test]
+    fn voice_falls_back_to_no_model() {
+        let mut g = CpuGuard::default();
+        let mut t = Instant::now();
+        let mut steps = Vec::new();
+        for i in 1..=4u64 {
+            t += Duration::from_secs(1);
+            steps.extend(g.check(&meters(i * 100, 0, 0.95), Model::RnNoise, t));
+        }
+        assert_eq!(steps, [1]);
+        assert_eq!(CpuGuard::ladder(Model::RnNoise)[1], None);
+    }
+
+    /// Paused or muted, the meters stand still; that must not count as busy or as room.
+    #[test]
+    fn a_pause_forgets_the_history() {
+        let (mut g, mut t, mut n) = (CpuGuard::default(), Instant::now(), (0, 0));
+        assert!(run(&mut g, &mut t, &mut n, 2, 0.95, 0.0).is_empty());
+        g.pause();
+        assert!(run(&mut g, &mut t, &mut n, 2, 0.95, 0.0).is_empty());
+    }
 }

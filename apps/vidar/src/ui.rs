@@ -527,6 +527,7 @@ const TIP_AUTOSTART: Tip = (
     "Start with Windows",
     "Starts Vidar in the tray when you sign in. Noise cancellation stays off until you turn it on.",
 );
+const TIP_PAUSE: Tip = ("Pause when no app is listening", "While no app records from Vidar AI Microphone, Vidar stops cleaning (the noise model is the part that uses the processor) and starts again the moment an app opens the microphone. Turn it off if an app misses the start of what you say.");
 const TIP_RAW: Tip = ("Raw microphone signal", "Gives Vidar your microphone before Windows and the microphone's driver apply their own effects, such as built-in noise suppression or automatic volume. Usually sounds more natural with Vidar; turn it off if your microphone sounds worse. Audio restarts briefly if Vidar is on.");
 const TIP_INSTALL: Tip = ("Virtual microphone", "Vidar AI Microphone runs on the VB-CABLE driver by VB-Audio (donationware). Installing it asks Windows for permission once; your speakers and microphone stay as they are.");
 const TIP_REINSTALL: Tip = ("Reinstall", "Installs the VB-Audio driver again. Use it if Vidar AI Microphone stopped working, for example after a Windows update.");
@@ -1943,6 +1944,10 @@ impl VidarWindow {
                 "Microphone muted".to_string(),
                 "Apps hear silence until you unmute".to_string(),
             ),
+            RunState::Running if v.idle => (
+                "Noise cancellation is on".to_string(),
+                format!("Paused until an app uses \"{}\"", short_cable_name(v)),
+            ),
             RunState::Running => (
                 "Noise cancellation is on".to_string(),
                 format!("Apps hear \"{}\"", short_cable_name(v)),
@@ -2029,6 +2034,9 @@ impl VidarWindow {
                 "Cleanest voice: about 60 ms delay, more processor work"
             };
             ui.label(RichText::new(mode_hint).small().color(p.muted));
+            if let Some(note) = &v.cpu_note {
+                ui.label(RichText::new(note).small().color(p.warn));
+            }
             ui.add_space(space::SM);
             section_help(ui, p, "Strength", STRENGTH_HELP);
             let names: Vec<&str> = STRENGTH.iter().map(|s| s.0).collect();
@@ -3170,6 +3178,10 @@ impl VidarWindow {
 
         let heard = self.voice_db.filter(|_| self.voice_secs >= 2.0);
         let (text, color) = match (live, heard) {
+            (Some(_), _) if v.idle => (
+                "Paused while no app uses Vidar AI Microphone. Open your call or recorder, then talk.",
+                p.muted,
+            ),
             (None, _) => (
                 "Turn noise cancellation on and talk to see your level.",
                 p.muted,
@@ -3364,7 +3376,7 @@ impl VidarWindow {
             section(ui, p, "Microphone");
             ui.label(
                 RichText::new(
-                    "Most people never need to change these. Talk and watch the meter: change something only if it says so.",
+                    "Most people never need to change these. Talk and watch the meter: change something only if it says so. Mode, strength, Boost and Auto level are remembered for each microphone.",
                 )
                 .small()
                 .color(p.muted),
@@ -3453,6 +3465,18 @@ impl VidarWindow {
             ) {
                 self.handle
                     .send(Cmd::SetStartWithWindows(!v.start_with_windows));
+            }
+            ui.add_space(space::XS);
+            if switch_row(
+                ui,
+                p,
+                "Pause when no app is listening",
+                "Saves processor time and battery",
+                v.pause_when_unused,
+                TIP_PAUSE,
+            ) {
+                self.handle
+                    .send(Cmd::SetPauseWhenUnused(!v.pause_when_unused));
             }
             ui.add_space(space::XXS);
             if link(ui, p, "How to use Vidar in a specific app").clicked() {

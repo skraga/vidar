@@ -11,9 +11,10 @@ use windows::Win32::Devices::FunctionDiscovery::{
 use windows::Win32::Foundation::{PROPERTYKEY, RPC_E_CHANGED_MODE};
 use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
 use windows::Win32::Media::Audio::{
-    eCapture, eCommunications, eConsole, eMultimedia, eRender, EDataFlow, ERole, IMMDevice,
-    IMMDeviceEnumerator, MMDeviceEnumerator, PKEY_AudioEndpoint_FormFactor, Speakers,
-    DEVICE_STATEMASK_ALL, DEVICE_STATE_ACTIVE, WAVEFORMATEX,
+    eCapture, eCommunications, eConsole, eMultimedia, eRender, AudioSessionStateActive, EDataFlow,
+    ERole, IAudioSessionManager2, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator,
+    PKEY_AudioEndpoint_FormFactor, Speakers, DEVICE_STATEMASK_ALL, DEVICE_STATE_ACTIVE,
+    WAVEFORMATEX,
 };
 use windows::Win32::System::Com::StructuredStorage::{
     PropVariantClear, PropVariantToStringAlloc, PropVariantToUInt32, PROPVARIANT,
@@ -352,6 +353,30 @@ impl WinAudio {
             .map_err(|e| Error::Com(e.to_string()))
     }
 
+    /// Is any app streaming on the endpoint right now? For a microphone: is anything
+    /// recording from it. `None` when Windows cannot say (treat as "yes").
+    pub fn in_use(&self, id: &str) -> Option<bool> {
+        let wid = wide(id);
+        // SAFETY: COM lookup and plain queries on live interfaces.
+        unsafe {
+            let dev = self.enumerator.GetDevice(PCWSTR(wid.as_ptr())).ok()?;
+            let manager = dev
+                .Activate::<IAudioSessionManager2>(CLSCTX_ALL, None)
+                .ok()?;
+            let sessions = manager.GetSessionEnumerator().ok()?;
+            let count = sessions.GetCount().ok()?;
+            for i in 0..count {
+                let Ok(session) = sessions.GetSession(i) else {
+                    continue;
+                };
+                if session.GetState().ok() == Some(AudioSessionStateActive) {
+                    return Some(true);
+                }
+            }
+            Some(false)
+        }
+    }
+
     /// Mute or unmute the endpoint in Windows.
     pub fn set_muted(&self, id: &str, muted: bool) -> Result<(), Error> {
         let vol = self.endpoint_volume(id)?;
@@ -471,5 +496,56 @@ mod tests {
         assert!((during - probe).abs() < 0.02, "{during} != {probe}");
         assert!((after.level - before.level).abs() < 0.02);
         assert_eq!(after.muted, before.muted);
+    }
+
+    /// Read-only: whether anything records from each microphone right now.
+    /// `cargo test -p vidar-win -- --ignored --nocapture who_is_listening`
+    #[test]
+    #[ignore = "depends on what runs on the machine"]
+    fn who_is_listening() {
+        let sys = WinAudio::new().unwrap();
+        for e in sys.endpoints(Flow::Capture) {
+            println!("{:<60} in use: {:?}", e.name, sys.in_use(&e.id));
+            assert!(sys.in_use(&e.id).is_some());
+        }
+    }
+
+    /// Records from the virtual cable for a moment, as an app would, and checks that
+    /// `in_use` sees it: `cargo test -p vidar-win -- --ignored recording_is_detected`.
+    #[test]
+    #[ignore = "needs the virtual cable"]
+    fn recording_is_detected() {
+        use windows::Win32::Media::Audio::{IAudioClient, AUDCLNT_SHAREMODE_SHARED};
+        let sys = WinAudio::new().unwrap();
+        let cable = sys
+            .endpoints(Flow::Capture)
+            .into_iter()
+            .find(|e| e.is_vb_cable())
+            .expect("Vidar AI Microphone installed");
+        assert_eq!(
+            sys.in_use(&cable.id),
+            Some(false),
+            "close apps recording from it"
+        );
+        let wid = wide(&cable.id);
+        // SAFETY: a plain shared-mode capture stream, started and stopped in this scope;
+        // the mix format is freed after use.
+        unsafe {
+            let dev = sys.enumerator.GetDevice(PCWSTR(wid.as_ptr())).unwrap();
+            let client = dev.Activate::<IAudioClient>(CLSCTX_ALL, None).unwrap();
+            let format = client.GetMixFormat().unwrap();
+            client
+                .Initialize(AUDCLNT_SHAREMODE_SHARED, 0, 1_000_000, 0, format, None)
+                .unwrap();
+            CoTaskMemFree(Some(format as *const c_void));
+            client.Start().unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            let during = sys.in_use(&cable.id);
+            client.Stop().unwrap();
+            drop(client);
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            assert_eq!(during, Some(true));
+            assert_eq!(sys.in_use(&cable.id), Some(false));
+        }
     }
 }

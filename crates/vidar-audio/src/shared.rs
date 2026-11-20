@@ -22,6 +22,9 @@ impl AtomicF64 {
 #[derive(Debug)]
 pub struct Controls {
     pub muted: AtomicBool,
+    /// No app is recording from the virtual microphone: output silence and skip the model,
+    /// like `muted`, but without the user having muted anything.
+    pub idle: AtomicBool,
     pub denoise: AtomicBool,
     pub high_pass: AtomicBool,
     pub auto_level: AtomicBool,
@@ -37,6 +40,7 @@ impl Controls {
     pub fn from_settings(s: &vidar_config::EngineSettings) -> Self {
         Self {
             muted: AtomicBool::new(false),
+            idle: AtomicBool::new(false),
             denoise: AtomicBool::new(s.denoise_enabled),
             high_pass: AtomicBool::new(s.high_pass),
             auto_level: AtomicBool::new(s.auto_level),
@@ -66,6 +70,10 @@ impl Controls {
     }
 }
 
+/// A frame that takes this share of its 10 ms leaves too little room for the rest of the
+/// system: counted in [`Meters::slow_frames`].
+pub const SLOW_FRAME: f64 = 0.7;
+
 /// Live measurements for meters, the tray icon and the watchdog.
 #[derive(Debug, Default)]
 pub struct Meters {
@@ -78,6 +86,11 @@ pub struct Meters {
     pub bands: [AtomicU32; vidar_dsp::BANDS],
     /// Frames processed since start.
     pub frames: AtomicU64,
+    /// Processing time per frame as a share of its 10 ms (f32 bits), smoothed over about
+    /// half a second. Above 1 the processor cannot keep up.
+    pub load: AtomicU32,
+    /// Frames whose processing took more than [`SLOW_FRAME`] of their 10 ms.
+    pub slow_frames: AtomicU64,
     /// Capture packets Windows flagged as discontinuous (data lost before we read it).
     pub capture_glitches: AtomicU64,
     /// Render callbacks that found the buffer empty.
@@ -111,6 +124,9 @@ pub struct MeterSnapshot {
     pub gate_gain: f64,
     pub bands: [f64; vidar_dsp::BANDS],
     pub frames: u64,
+    /// See [`Meters::load`].
+    pub load: f64,
+    pub slow_frames: u64,
     pub capture_glitches: u64,
     pub underruns: u64,
     pub overruns: u64,
@@ -146,6 +162,16 @@ impl Meters {
         self.frames.fetch_add(1, Relaxed);
     }
 
+    /// Record how long one frame took, as a share of its 10 ms.
+    pub(crate) fn publish_load(&self, share: f64) {
+        let smoothed = f32_get(&self.load);
+        // About half a second (50 frames) of smoothing.
+        f32_set(&self.load, smoothed + (share - smoothed) * 0.02);
+        if share > SLOW_FRAME {
+            self.slow_frames.fetch_add(1, Relaxed);
+        }
+    }
+
     pub(crate) fn publish_bands(&self, bands: &[f64; vidar_dsp::BANDS]) {
         for (a, &db) in self.bands.iter().zip(bands) {
             f32_set(a, db);
@@ -166,6 +192,8 @@ impl Meters {
             gate_gain: f32_get(&self.gate_gain),
             bands: self.bands(),
             frames: self.frames.load(Relaxed),
+            load: f32_get(&self.load),
+            slow_frames: self.slow_frames.load(Relaxed),
             capture_glitches: self.capture_glitches.load(Relaxed),
             underruns: self.underruns.load(Relaxed),
             overruns: self.overruns.load(Relaxed),

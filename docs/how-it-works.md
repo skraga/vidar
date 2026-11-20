@@ -208,3 +208,27 @@ regular shared-mode stream when a device cannot provide it (a format other than 
 a driver without the newer Windows audio interface, or a Bluetooth headset). *Raw microphone
 signal* (off by default) asks Windows to skip the microphone driver's own effects, such as
 built-in noise suppression or automatic volume, which can work against Vidar's processing.
+
+## Saving work
+
+- **Nobody listening.** Four times a second Vidar asks Windows whether any app is recording
+  from Vidar AI Microphone (an active audio session on its endpoint). While none is, the
+  capture thread sends silence and skips the model, after running it on silence for 80 ms so
+  that resuming cannot replay old speech: the same path as Mute. It resumes on the next check
+  after an app opens the microphone, so at most about a quarter of a second is silent.
+  *Pause when no app is listening* in Settings turns this off.
+- **Processor too busy.** Every frame's processing time is measured against its 10 ms. When the
+  smoothed time stays above 80% of that, or more than one frame in ten is slow, for three
+  seconds, Vidar switches to the next lighter mode (Voice HD, then Voice, then the filter and
+  gate alone) and says so under Mode. After two minutes it tries the better mode again; if
+  that is too much within ten minutes, the next wait doubles, up to half an hour. Choosing a
+  mode yourself starts over.
+
+## Settings for each microphone
+
+Mode, strength, Boost and Auto level belong to the microphone: a laptop microphone, a USB
+microphone and a Bluetooth headset need different values. Vidar keeps them per device
+(`mic_profiles` in the settings file, by endpoint ID). Picking another microphone, or Windows
+switching its default while Vidar is off, loads that microphone's values; a microphone used
+for the first time starts from the current ones. Voice tone, the theme and the other settings
+stay the same for every microphone.
