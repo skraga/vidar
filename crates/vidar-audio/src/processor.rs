@@ -129,7 +129,8 @@ impl Processor {
         let c = &self.controls;
 
         // Muted, or no app is listening: silence, and after a short flush no model work.
-        if c.muted.load(Relaxed) || c.idle.load(Relaxed) {
+        let muted = c.muted.load(Relaxed);
+        if muted || c.idle.load(Relaxed) {
             if !self.was_muted {
                 self.gate.reset();
                 self.hpf.reset();
@@ -138,6 +139,14 @@ impl Processor {
                 self.was_muted = true;
                 self.mute_flush = MUTE_FLUSH_FRAMES;
             }
+            // Paused (not muted): apps get silence, but the window still shows the raw
+            // microphone, so the button moves with your voice and clipping is still caught.
+            // The band analysis is cheap next to the model.
+            let (in_peak, bands) = if muted {
+                (-100.0, [-100.0; BANDS])
+            } else {
+                (levels(&self.frame).peak_db, self.bands.analyze(&self.frame))
+            };
             self.frame.fill(0.0);
             // Run the model on silence for a few frames so its delay line holds no speech from
             // before the mute; otherwise unmuting would replay it. (No reset: RNNoise's allocates.)
@@ -148,8 +157,8 @@ impl Processor {
                 }
                 self.frame.fill(0.0);
             }
-            self.meters.publish(0.0, -100.0, -100.0, -100.0, 0.0);
-            self.meters.publish_bands(&[-100.0; BANDS]);
+            self.meters.publish(0.0, -100.0, -100.0, in_peak, 0.0);
+            self.meters.publish_bands(&bands);
             return;
         }
         self.was_muted = false;
@@ -349,6 +358,10 @@ mod tests {
             !heard_sound.load(Relaxed),
             "muted input must not reach the model"
         );
+        // Muted shows nothing at all, unlike a pause.
+        let m = p.meters.snapshot();
+        assert_eq!(m.in_peak_db, -100.0);
+        assert!(m.bands.iter().all(|&b| b == -100.0));
     }
 
     /// Nobody listening works like mute: silence out, the model stops after its flush, and
@@ -357,14 +370,18 @@ mod tests {
     fn idle_stops_the_model_and_resumes_it() {
         let frames = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let heard_sound = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let (mut p, controls, _, _, _) = setup(Some(Box::new(Spy {
+        let (mut p, controls, meters, _, _) = setup(Some(Box::new(Spy {
             frames: frames.clone(),
             heard_sound: heard_sound.clone(),
         })));
         controls.idle.store(true, Relaxed);
         let mut out = Vec::new();
-        for _ in 0..20 {
-            p.push_interleaved(&vec![0.5f32; FRAME_SIZE], 1, &mut |f| out.push(f[0]));
+        // A 300 Hz tone, so the voice bands have something to show.
+        let tone: Vec<f32> = (0..FRAME_SIZE * 20)
+            .map(|i| 0.3 * (i as f32 * 2.0 * std::f32::consts::PI * 300.0 / 48_000.0).sin())
+            .collect();
+        for chunk in tone.chunks(FRAME_SIZE) {
+            p.push_interleaved(chunk, 1, &mut |f| out.extend_from_slice(f));
         }
         assert_eq!(frames.load(Relaxed), MUTE_FLUSH_FRAMES);
         assert!(out.iter().all(|&x| x == 0.0), "idle sends silence");
@@ -372,6 +389,11 @@ mod tests {
             !controls.muted.load(Relaxed),
             "the user's mute is untouched"
         );
+        // The window still sees the microphone: the button moves, clipping is caught.
+        let m = meters.snapshot();
+        assert!(m.in_peak_db > -20.0, "input peak {}", m.in_peak_db);
+        assert!(m.bands.iter().any(|&b| b > -60.0), "bands {:?}", m.bands);
+        assert_eq!(m.out_rms_db, -100.0, "apps hear nothing");
 
         controls.idle.store(false, Relaxed);
         p.push_interleaved(&vec![0.5f32; FRAME_SIZE], 1, &mut |_| {});

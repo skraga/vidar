@@ -214,7 +214,9 @@ built-in noise suppression or automatic volume, which can work against Vidar's p
 - **Nobody listening.** Four times a second Vidar asks Windows whether any app is recording
   from Vidar AI Microphone (an active audio session on its endpoint). While none is, the
   capture thread sends silence and skips the model, after running it on silence for 80 ms so
-  that resuming cannot replay old speech: the same path as Mute. It resumes on the next check
+  that resuming cannot replay old speech: the same path as Mute. Unlike Mute, the window keeps
+  showing the raw microphone (a cheap band analysis, no model), so the button still moves with
+  your voice and clipping is still reported. It resumes on the next check
   after an app opens the microphone, so at most about a quarter of a second is silent.
   *Pause when no app is listening* in Settings turns this off.
 - **Processor too busy.** Every frame's processing time is measured against its 10 ms. When the
