@@ -63,6 +63,9 @@ SYSTEMS = {
     "voice_hd": ["--engine", "dpdfnet", "--no-fallback", "--dpdfnet-vad", "rnnoise"],
     "voice_hd_spectral": ["--engine", "dpdfnet", "--no-fallback", "--dpdfnet-vad", "spectral"],
     "voice_no_gate": ["--engine", "rnnoise", "--no-gate"],
+    "voice_no_declick": ["--engine", "rnnoise", "--no-declick"],
+    # RNNoise with nothing of Vidar's own after it: what the model alone does to speech.
+    "voice_model_only": ["--engine", "rnnoise", "--no-gate", "--no-declick"],
     "voice_hd_no_gate": ["--engine", "dpdfnet", "--no-fallback", "--dpdfnet-vad", "rnnoise", "--no-gate"],
     "voice_hd_no_declick": ["--engine", "dpdfnet", "--no-fallback", "--dpdfnet-vad", "rnnoise", "--no-declick"],
     "voice_hd_gate_out": ["--engine", "dpdfnet", "--no-fallback", "--dpdfnet-vad", "rnnoise", "--gate-level", "output"],
