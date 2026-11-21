@@ -19,6 +19,10 @@ pub struct EngineSettings {
     pub auto_level: bool,
     /// Equaliser band gains in dB (all zero = off).
     pub eq_db: [f64; vidar_dsp::EQ_BANDS],
+    /// Studio sound after the equaliser.
+    pub studio: bool,
+    /// Auto tone (a learned equaliser correction on top of the voice tone).
+    pub auto_tone: bool,
 }
 
 /// Output gain after the model (before boost).
@@ -63,6 +67,8 @@ impl EngineSettings {
             hpf_cutoff_hz: HPF_CUTOFF_HZ,
             auto_level: cfg.auto_level,
             eq_db: cfg.eq_gains_db(),
+            studio: cfg.studio_sound,
+            auto_tone: cfg.auto_tone,
         }
     }
 }

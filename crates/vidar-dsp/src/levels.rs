@@ -36,6 +36,24 @@ pub fn levels(frame: &[f32]) -> Levels {
     }
 }
 
+/// Multiply `frame` by a gain that moves in a straight line from `from` (just before the
+/// first sample) to `to` (the last sample), so a gain change never jumps between two
+/// samples, which would click. A steady gain is a plain multiply, and a steady 1.0 leaves
+/// the frame untouched.
+pub fn ramp_gain(frame: &mut [f32], from: f32, to: f32) {
+    if from == to {
+        if to != 1.0 {
+            frame.iter_mut().for_each(|x| *x *= to);
+        }
+        return;
+    }
+    let n = frame.len() as f32;
+    for (i, x) in frame.iter_mut().enumerate() {
+        let t = (i + 1) as f32 / n;
+        *x *= from + (to - from) * t;
+    }
+}
+
 /// Soft-knee saturation above `knee`, so hard ADC clipping does not smear the model's input.
 pub fn soft_preclip(frame: &mut [f32], knee: f32) {
     let span = 1.0 - knee;

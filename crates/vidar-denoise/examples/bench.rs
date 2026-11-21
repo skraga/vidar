@@ -11,8 +11,8 @@ use std::time::Instant;
 
 use vidar_denoise::{create, DenoiseSpec, Engine};
 use vidar_dsp::{
-    flush_denormals, process_mono_frame, AdaptiveGate, Frame, GateParams, HighPass, SpeechLeveler,
-    TransientSuppressor, FRAME_SIZE, PCM_SCALE,
+    flush_denormals, process_mono_frame, AdaptiveGate, Frame, GateParams, HighPass, OutputStage,
+    SpeechLeveler, TransientSuppressor, FRAME_SIZE, PCM_SCALE,
 };
 
 /// Frame times in microseconds over speech followed by `silence` frames of digital silence;
@@ -87,6 +87,7 @@ fn main() {
         let mut gate = AdaptiveGate::new(GateParams::default());
         let mut lev = SpeechLeveler::default();
         let mut ts = TransientSuppressor::default();
+        let mut out = OutputStage::new();
         let t = Instant::now();
         for _ in 0..5 {
             for f in &frames {
@@ -100,6 +101,8 @@ fn main() {
                     Some(&mut ts),
                     0.0,
                     None,
+                    None,
+                    &mut out,
                 );
             }
         }
@@ -114,23 +117,33 @@ fn main() {
     }
 
     let cases = [
-        ("RNNoise (Voice)", Engine::RnNoise, "rnnoise"),
+        ("RNNoise (Voice)", Engine::RnNoise, "rnnoise", ""),
         (
             "DPDFNet + RNNoise VAD (Voice HD)",
             Engine::DpdfNet,
             "rnnoise",
+            "",
         ),
-        ("DPDFNet + spectral VAD", Engine::DpdfNet, "spectral"),
+        ("DPDFNet + spectral VAD", Engine::DpdfNet, "spectral", ""),
+        (
+            "DPDFNet8 + RNNoise VAD",
+            Engine::DpdfNet,
+            "rnnoise",
+            "dpdfnet8_48khz_hr",
+        ),
     ];
     let mut tails = Vec::new();
-    for (name, engine, vad) in cases {
-        let spec = DenoiseSpec {
+    for (name, engine, vad, model) in cases {
+        let mut spec = DenoiseSpec {
             engine,
             dpdfnet_vad: vad.into(),
             model_dirs: vec![root.join("third_party").join("dpdfnet")],
             ..DenoiseSpec::default()
         };
-        let mut model = match create(&spec) {
+        if !model.is_empty() {
+            spec.dpdfnet_model = model.into();
+        }
+        let mut den = match create(&spec) {
             Ok(m) => m,
             Err(e) => {
                 println!("{name:<34} unavailable: {e}");
@@ -139,13 +152,13 @@ fn main() {
         };
         // Warm up, then take the best of several passes so background load does not count.
         for f in model_frames.iter().take(100) {
-            model.process_frame(&mut f.clone());
+            den.process_frame(&mut f.clone());
         }
         let mut best = f64::MAX;
         for _ in 0..5 {
             let t = Instant::now();
             for f in &model_frames {
-                model.process_frame(&mut f.clone());
+                den.process_frame(&mut f.clone());
             }
             best = best.min(t.elapsed().as_secs_f64());
         }
@@ -155,7 +168,7 @@ fn main() {
             best / audio_secs * 100.0,
             best / frames.len() as f64 * 1e6
         );
-        tails.push((name, frame_times(&mut *model, &model_frames)));
+        tails.push((name, frame_times(&mut *den, &model_frames)));
     }
 
     // A real-time callback has 10 ms per frame: the slow frames matter, not the average.
@@ -176,13 +189,16 @@ fn main() {
         "
 Digital silence after speech, 10 s (us/frame: mean / p99 / max)"
     );
-    for (name, engine, vad) in cases {
-        let spec = DenoiseSpec {
+    for (name, engine, vad, model) in cases {
+        let mut spec = DenoiseSpec {
             engine,
             dpdfnet_vad: vad.into(),
             model_dirs: vec![root.join("third_party").join("dpdfnet")],
             ..DenoiseSpec::default()
         };
+        if !model.is_empty() {
+            spec.dpdfnet_model = model.into();
+        }
         for ftz in [false, true] {
             if let Some((mean, p99, max)) = silence_tail(&spec, &model_frames, 1000, ftz) {
                 println!(

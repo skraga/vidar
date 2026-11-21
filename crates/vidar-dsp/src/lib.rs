@@ -1,5 +1,5 @@
 //! Vidar signal chain: high-pass, adaptive gate, transient suppressor, leveler, equaliser,
-//! limiter.
+//! Studio sound (compressor, de-esser, saturation), limiter.
 //!
 //! Sample buffers and gain ramps are `f32`; filter, gate and leveler state and levels are
 //! `f64`. The reference vectors in `tests/golden` pin the exact numeric behaviour.
@@ -7,6 +7,7 @@
 //! Nothing here allocates after construction, so every `process` call is safe on a
 //! real-time audio thread.
 
+mod autotone;
 mod bands;
 mod chain;
 mod denormals;
@@ -15,9 +16,13 @@ mod gate;
 mod hpf;
 mod leveler;
 mod levels;
+mod output;
+mod pop;
 mod stats;
+mod studio;
 mod transient;
 
+pub use autotone::AutoTone;
 pub use bands::{VoiceBands, BANDS, BAND_CENTRES_HZ};
 pub use chain::{process_mono_frame, FrameStats};
 pub use denormals::flush_denormals;
@@ -25,7 +30,10 @@ pub use eq::{eq_preset, VoiceEq, EQ_BANDS, EQ_FREQS_HZ, EQ_MAX_DB, EQ_POINTS_HZ,
 pub use gate::{AdaptiveGate, GateParams};
 pub use hpf::HighPass;
 pub use leveler::SpeechLeveler;
-pub use levels::{levels, soft_limit, soft_preclip, Levels};
+pub use levels::{levels, ramp_gain, soft_limit, soft_preclip, Levels};
+pub use output::{Limiter, OutputStage, LIMIT};
+pub use pop::PopFilter;
+pub use studio::Studio;
 pub use transient::TransientSuppressor;
 
 /// 10 ms at 48 kHz. Every block in the chain works on frames of this size.

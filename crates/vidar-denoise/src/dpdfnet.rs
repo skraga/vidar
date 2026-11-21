@@ -23,6 +23,8 @@ pub const WIN_LEN: usize = 2 * FRAME_SIZE;
 pub const FREQ_BINS: usize = WIN_LEN / 2 + 1;
 
 pub const DEFAULT_MODEL: &str = "dpdfnet2_48khz_hr";
+/// The larger model behind Voice HD+.
+pub const LARGE_MODEL: &str = "dpdfnet8_48khz_hr";
 pub const MODELS: [&str; 2] = ["dpdfnet2_48khz_hr", "dpdfnet8_48khz_hr"];
 
 /// Internal look-ahead of each model in frames, beyond the one-hop STFT delay.

@@ -16,8 +16,14 @@ probability, because RNNoise picks scalar, SSE4.1 or AVX2 code depending on the 
 rounding differences build up in its recurrent state. The gate must make exactly the same
 open/close decisions on every frame.
 
-There is no generator in this repository. The vectors were written once, before the first
-commit, by running the chain over the clips with the settings in `manifest.json` and dumping
-one CSV row per 480-sample frame (columns as in the header row). If a change to the chain is
-intentional, they must be regenerated the same way and the difference reviewed; adding a
-regeneration mode to `golden.rs` is the obvious way to make that repeatable.
+The vectors were first written before the first commit, by running the chain over the clips
+with the settings in `manifest.json` and dumping one CSV row per 480-sample frame (columns as
+in the header row). If a change to the chain is intentional, regenerate them with
+
+```shell
+VIDAR_BLESS_GOLDEN=1 cargo test -p vidar-denoise --release --test golden -- --nocapture
+```
+
+which rewrites only the files that moved past the bounds (the others keep their stored
+values, so this CPU's RNNoise rounding does not churn them) and prints the report. Review the
+report and the diff before committing.

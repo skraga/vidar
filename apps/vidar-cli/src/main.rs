@@ -19,8 +19,12 @@ use crate::clean::{
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
 enum EngineArg {
+    /// Voice
     Rnnoise,
+    /// Voice HD
     Dpdfnet,
+    /// Voice HD+ (the larger DPDFNet model)
+    Dpdfnet8,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -33,6 +37,13 @@ enum VadArg {
 enum GateLevelArg {
     Input,
     Output,
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum StrengthArg {
+    Gentle,
+    Balanced,
+    Strong,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -94,9 +105,24 @@ struct Cli {
     /// Voice HD: most the model may turn anything down, in dB (default: no limit)
     #[arg(long = "attn-limit-db", value_name = "DB")]
     attn_limit_db: Option<f64>,
+    /// How far the gate turns the microphone down between words, in dB; -120 or lower means
+    /// silence (default: the app's -24.4 dB)
+    #[arg(long = "gate-floor-db", value_name = "DB", allow_negative_numbers = true, default_value_t = clean::APP_GATE_FLOOR_DB)]
+    gate_floor_db: f64,
+    /// Strength, as in the app: how sure the gate must be that someone is talking
+    #[arg(long, value_enum, default_value = "balanced")]
+    strength: StrengthArg,
     /// Level quiet speech automatically
     #[arg(long = "auto-level")]
     auto_level: bool,
+    /// Podcast voice: the Broadcast curve, compressor, de-esser and saturation, as the app's
+    /// switch (mono only)
+    #[arg(long)]
+    studio: bool,
+    /// Auto tone: learn an equaliser correction that makes the microphone sound like a
+    /// studio one, as the app's switch (mono only)
+    #[arg(long = "auto-tone")]
+    auto_tone: bool,
     /// Make-up gain in dB
     #[arg(long, default_value_t = 0.0, allow_negative_numbers = true)]
     gain: f64,
@@ -176,12 +202,21 @@ fn main() -> ExitCode {
         no_declick: cli.no_declick,
         gate_level_after_model: matches!(cli.gate_level, GateLevelArg::Output),
         attn_limit_db: cli.attn_limit_db,
+        gate_floor_db: cli.gate_floor_db,
+        gate_thresholds: match cli.strength {
+            StrengthArg::Gentle => clean::GENTLE,
+            StrengthArg::Balanced => clean::BALANCED,
+            StrengthArg::Strong => clean::STRONG,
+        },
         auto_level: cli.auto_level,
+        studio: cli.studio,
+        auto_tone: cli.auto_tone,
         gain_db: cli.gain,
         stereo: cli.stereo,
         engine: match cli.engine {
             EngineArg::Rnnoise => Engine::RnNoise,
             EngineArg::Dpdfnet => Engine::DpdfNet,
+            EngineArg::Dpdfnet8 => Engine::DpdfNet8,
         },
         dpdfnet_vad: match cli.dpdfnet_vad {
             VadArg::Rnnoise => "rnnoise".into(),

@@ -12,7 +12,7 @@ pub const BAND_CENTRES_HZ: [f64; BANDS] = [160.0, 320.0, 640.0, 1280.0, 2560.0, 
 
 /// RBJ band-pass (0 dB peak gain), transposed direct form II.
 #[derive(Debug, Clone, Copy, Default)]
-struct BandPass {
+pub(crate) struct BandPass {
     b0: f32,
     b2: f32,
     a1: f32,
@@ -22,7 +22,7 @@ struct BandPass {
 }
 
 impl BandPass {
-    fn new(centre_hz: f64, q: f64, sample_rate: f64) -> Self {
+    pub(crate) fn new(centre_hz: f64, q: f64, sample_rate: f64) -> Self {
         let w0 = std::f64::consts::TAU * centre_hz / sample_rate;
         let alpha = w0.sin() / (2.0 * q);
         let a0 = 1.0 + alpha;
@@ -37,7 +37,7 @@ impl BandPass {
     }
 
     #[inline]
-    fn tick(&mut self, x: f32) -> f32 {
+    pub(crate) fn tick(&mut self, x: f32) -> f32 {
         // b1 is zero for this band-pass.
         let y = self.b0 * x + self.s1;
         self.s1 = -self.a1 * y + self.s2;

@@ -1,6 +1,7 @@
-use crate::levels::{levels, soft_limit, soft_preclip};
+use crate::levels::{levels, soft_preclip};
 use crate::{
-    AdaptiveGate, Denoiser, Frame, HighPass, SpeechLeveler, TransientSuppressor, VoiceEq, PCM_SCALE,
+    AdaptiveGate, Denoiser, Frame, HighPass, OutputStage, SpeechLeveler, Studio,
+    TransientSuppressor, VoiceEq, PCM_SCALE,
 };
 
 /// Per-frame measurements returned by [`process_mono_frame`].
@@ -18,10 +19,15 @@ pub struct FrameStats {
 ///
 /// high-pass → metering and soft pre-clip → neural model (or a level-based probability
 /// when bypassed) → transient suppression → optional leveler → gain → adaptive gate →
-/// optional equaliser → soft limiter.
+/// optional equaliser → optional Studio sound → soft limiter.
 ///
-/// The equaliser comes after the model, so the model hears the natural voice, and before
-/// the limiter, which catches any peaks a boost adds.
+/// The equaliser comes after the model, so the model hears the natural voice. Studio sound
+/// follows the equaliser, as a compressor follows the EQ on a mixing desk, so its de-esser
+/// also catches S sounds a presence boost makes sharp. The limiter comes last and catches
+/// any peaks a boost or the make-up gain adds.
+///
+/// `output` holds the state of the gain (a change glides across the frame instead of
+/// stepping) and of the limiter; use one per stream, like the gate.
 ///
 /// Sets flush-to-zero on the calling thread first (see [`crate::flush_denormals`]), so the
 /// live engine, the voice test and the CLI all run the models without subnormal slowdowns.
@@ -36,6 +42,8 @@ pub fn process_mono_frame(
     transient: Option<&mut TransientSuppressor>,
     mic_boost_db: f64,
     eq: Option<&mut VoiceEq>,
+    studio: Option<&mut Studio>,
+    output: &mut OutputStage,
 ) -> FrameStats {
     crate::flush_denormals();
     if let Some(h) = hpf {
@@ -75,16 +83,16 @@ pub fn process_mono_frame(
     if let Some(l) = leveler {
         l.process(frame, speech_prob, level_db, mic_boost_db);
     }
-    if total_gain != 1.0 {
-        let g = total_gain as f32;
-        frame.iter_mut().for_each(|x| *x *= g);
-    }
+    output.apply_gain(frame, total_gain);
 
     let gate_gain = gate.process(frame, speech_prob, Some(gate_level_db.unwrap_or(level_db)));
     if let Some(eq) = eq {
         eq.process(frame);
     }
-    soft_limit(frame, 0.85);
+    if let Some(studio) = studio {
+        studio.process(frame);
+    }
+    output.limit(frame);
 
     FrameStats {
         speech_prob,
@@ -125,10 +133,34 @@ mod tests {
     fn bypass_derives_probability_from_level() {
         let mut gate = AdaptiveGate::new(GateParams::default());
         let mut f = [0.0f32; FRAME_SIZE];
-        let s = process_mono_frame(&mut f, None, None, &mut gate, 1.0, None, None, 0.0, None);
+        let s = process_mono_frame(
+            &mut f,
+            None,
+            None,
+            &mut gate,
+            1.0,
+            None,
+            None,
+            0.0,
+            None,
+            None,
+            &mut OutputStage::new(),
+        );
         assert_eq!(s.speech_prob, 0.0);
         let mut f = [0.5f32; FRAME_SIZE];
-        let s = process_mono_frame(&mut f, None, None, &mut gate, 1.0, None, None, 0.0, None);
+        let s = process_mono_frame(
+            &mut f,
+            None,
+            None,
+            &mut gate,
+            1.0,
+            None,
+            None,
+            0.0,
+            None,
+            None,
+            &mut OutputStage::new(),
+        );
         assert_eq!(s.speech_prob, 1.0);
     }
 
@@ -150,6 +182,8 @@ mod tests {
             None,
             0.0,
             None,
+            None,
+            &mut OutputStage::new(),
         );
         assert_eq!(s.speech_prob, 0.9);
         assert!(s.input_rms_db > -11.0, "input level is reported unaligned");
@@ -162,7 +196,19 @@ mod tests {
             ..GateParams::default()
         });
         let mut f = [0.99f32; FRAME_SIZE];
-        process_mono_frame(&mut f, None, None, &mut gate, 4.0, None, None, 0.0, None);
+        process_mono_frame(
+            &mut f,
+            None,
+            None,
+            &mut gate,
+            4.0,
+            None,
+            None,
+            0.0,
+            None,
+            None,
+            &mut OutputStage::new(),
+        );
         assert!(f.iter().all(|x| x.abs() <= 1.0));
     }
 }

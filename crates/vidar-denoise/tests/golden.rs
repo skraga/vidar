@@ -1,5 +1,9 @@
 //! Reference vectors: run the chain over the clips in tests/golden and compare every frame
 //! with the stored reference output, so any change in behaviour is caught.
+//!
+//! After an intended change, `VIDAR_BLESS_GOLDEN=1 cargo test -p vidar-denoise --release
+//! --test golden` rewrites the reference files from the current chain (and still reports
+//! how far they moved). Review the report and the diff before committing them.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -7,8 +11,8 @@ use std::time::Instant;
 
 use vidar_denoise::{create, DenoiseSpec, Engine};
 use vidar_dsp::{
-    process_mono_frame, AdaptiveGate, Denoiser, Frame, GateParams, HighPass, SpeechLeveler,
-    TransientSuppressor, FRAME_SIZE,
+    process_mono_frame, AdaptiveGate, Denoiser, Frame, GateParams, HighPass, OutputStage,
+    SpeechLeveler, TransientSuppressor, FRAME_SIZE,
 };
 
 const CLIPS: [&str; 5] = [
@@ -89,6 +93,10 @@ fn read_clip(name: &str) -> Vec<f32> {
         .collect()
 }
 
+fn bless() -> bool {
+    std::env::var_os("VIDAR_BLESS_GOLDEN").is_some_and(|v| v == "1")
+}
+
 fn read_csv(path: &Path) -> Vec<Vec<f64>> {
     std::fs::read_to_string(path)
         .unwrap()
@@ -139,6 +147,20 @@ struct Diff {
     sample_max: f64,
 }
 
+impl Diff {
+    /// RNNoise picks scalar, SSE4.1 or AVX2/FMA layers at run time, so its sums are rounded
+    /// differently on different CPUs and the differences compound through its recurrent
+    /// state. The bounds allow for that (about -65 dB on the audio); the gate must still
+    /// make exactly the same decisions.
+    fn ok(&self) -> bool {
+        self.max[1] <= 5e-3
+            && self.max[3] <= 1e-3
+            && self.max[8] <= 3e-4
+            && self.sample_max <= 1e-3
+            && self.gate_flips == 0
+    }
+}
+
 fn run(cfg: &Config, clip: &str) -> (Diff, f64) {
     let audio = read_clip(clip);
     let expected = read_csv(&golden_dir().join(cfg.name).join(format!("{clip}.csv")));
@@ -147,16 +169,24 @@ fn run(cfg: &Config, clip: &str) -> (Diff, f64) {
     let mut gate = gate_for(cfg);
     let mut leveler = cfg.leveler.then(SpeechLeveler::default);
     let mut ts = TransientSuppressor::default();
+    let mut output = OutputStage::new();
+    let csv_path = golden_dir().join(cfg.name).join(format!("{clip}.csv"));
+    let f32_path = golden_dir().join(cfg.name).join(format!("{clip}.f32"));
+    let mut new_csv = String::new();
+    let mut new_samples: Vec<f32> = Vec::new();
+    if bless() {
+        let text = std::fs::read_to_string(&csv_path).unwrap();
+        new_csv.push_str(text.lines().next().unwrap());
+        new_csv.push('\n');
+    }
 
-    let full = std::fs::read(golden_dir().join(cfg.name).join(format!("{clip}.f32")))
-        .ok()
-        .map(|b| {
-            b.as_chunks::<4>()
-                .0
-                .iter()
-                .map(|c| f32::from_le_bytes(*c))
-                .collect::<Vec<f32>>()
-        });
+    let full = std::fs::read(&f32_path).ok().map(|b| {
+        b.as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c))
+            .collect::<Vec<f32>>()
+    });
 
     let mut d = Diff::default();
     let n = audio.len() / FRAME_SIZE;
@@ -176,6 +206,8 @@ fn run(cfg: &Config, clip: &str) -> (Diff, f64) {
             Some(&mut ts),
             cfg.boost_db,
             None,
+            None,
+            &mut output,
         );
         let peak = f.iter().map(|x| f64::from(x.abs())).fold(0.0, f64::max);
         let rms = (f.iter().map(|&x| f64::from(x) * f64::from(x)).sum::<f64>() / FRAME_SIZE as f64)
@@ -198,6 +230,18 @@ fn run(cfg: &Config, clip: &str) -> (Diff, f64) {
         if got[5] != want[5] {
             d.gate_flips += 1;
         }
+        if bless() {
+            let _ = write!(new_csv, "{i}");
+            for (c, v) in got.iter().enumerate().skip(1) {
+                if c == 5 {
+                    let _ = write!(new_csv, ",{}", *v as u8);
+                } else {
+                    let _ = write!(new_csv, ",{v:?}");
+                }
+            }
+            new_csv.push('\n');
+            new_samples.extend_from_slice(&f);
+        }
         if let Some(full) = &full {
             for (k, &x) in f.iter().enumerate() {
                 d.sample_max = d
@@ -207,6 +251,15 @@ fn run(cfg: &Config, clip: &str) -> (Diff, f64) {
         }
     }
     d.frames = n;
+    // Rewrite only what moved past the bounds: the rest keeps its stored values, so a bless
+    // does not churn files over formatting or this CPU's RNNoise rounding.
+    if bless() && !d.ok() {
+        std::fs::write(&csv_path, new_csv).unwrap();
+        if full.is_some() {
+            let bytes: Vec<u8> = new_samples.iter().flat_map(|x| x.to_le_bytes()).collect();
+            std::fs::write(&f32_path, bytes).unwrap();
+        }
+    }
     let rt_factor = (n as f64 * 0.01) / t0.elapsed().as_secs_f64();
     (d, rt_factor)
 }
@@ -223,21 +276,16 @@ fn chain_matches_reference_vectors() {
                 "{:<26} {:<13} prob {:.1e} in_rms {:.1e} gain {:.1e} floor {:.1e} out_rms {:.1e} samples {:.1e} gate_flips {}/{} speed {:.0}x",
                 cfg.name, clip, d.max[1], d.max[3], d.max[4], d.max[6], d.max[8], d.sample_max, d.gate_flips, d.frames, speed
             );
-            // RNNoise picks scalar, SSE4.1 or AVX2/FMA layers at run time, so its sums are
-            // rounded differently on different CPUs and the differences compound through its
-            // recurrent state. The bounds allow for that (about -65 dB on the audio); the gate
-            // must still make exactly the same decisions.
-            let ok = d.max[1] <= 5e-3
-                && d.max[3] <= 1e-3
-                && d.max[8] <= 3e-4
-                && d.sample_max <= 1e-3
-                && d.gate_flips == 0;
-            if !ok {
+            if !d.ok() {
                 failures.push(format!("{}/{clip}", cfg.name));
             }
         }
     }
     println!("{report}");
+    if bless() {
+        println!("reference vectors rewritten; changed before: {failures:?}");
+        return;
+    }
     assert!(
         failures.is_empty(),
         "golden mismatch in: {failures:?}\n{report}"

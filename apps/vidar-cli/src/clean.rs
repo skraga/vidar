@@ -5,8 +5,9 @@ use std::time::Instant;
 
 use vidar_denoise::{create, DenoiseSpec, Engine};
 use vidar_dsp::{
-    levels, process_mono_frame, soft_limit, soft_preclip, AdaptiveGate, Denoiser, Frame,
-    GateParams, HighPass, SpeechLeveler, TransientSuppressor, FRAME_SIZE, PCM_SCALE,
+    levels, process_mono_frame, soft_preclip, AdaptiveGate, AutoTone, Denoiser, Frame, GateParams,
+    HighPass, Limiter, OutputStage, SpeechLeveler, Studio, TransientSuppressor, VoiceEq,
+    FRAME_SIZE, PCM_SCALE,
 };
 
 use crate::decode::{decode, SAMPLE_RATE};
@@ -23,7 +24,15 @@ pub struct CleanOptions {
     pub gate_level_after_model: bool,
     /// DPDFNet attenuation limit in dB (`None`: unlimited).
     pub attn_limit_db: Option<f64>,
+    /// How far the gate turns the microphone down between words, in dB (0 or negative).
+    pub gate_floor_db: f64,
+    /// Strength: the gate's open and close thresholds (the app's Gentle / Balanced / Strong).
+    pub gate_thresholds: (f64, f64),
     pub auto_level: bool,
+    /// Studio sound (compressor, de-esser, saturation) before the limiter. Mono only.
+    pub studio: bool,
+    /// Auto tone (learned equaliser correction towards a studio microphone). Mono only.
+    pub auto_tone: bool,
     pub gain_db: f64,
     pub stereo: bool,
     pub engine: Engine,
@@ -70,11 +79,24 @@ impl Rng {
     }
 }
 
-fn cli_gate(level_after_model: bool) -> AdaptiveGate {
+/// The gate floor the app uses: 0.06, about -24 dB.
+pub const APP_GATE_FLOOR_DB: f64 = -24.4;
+
+/// The app's strengths: open and close thresholds of the gate.
+pub const GENTLE: (f64, f64) = (0.55, 0.41);
+pub const BALANCED: (f64, f64) = (0.70, 0.52);
+pub const STRONG: (f64, f64) = (0.82, 0.61);
+
+fn cli_gate(level_after_model: bool, floor_db: f64, (open, close): (f64, f64)) -> AdaptiveGate {
     AdaptiveGate::new(GateParams {
         level_after_model,
-        threshold: 0.70,
-        close_threshold: 0.52,
+        floor_gain: if floor_db <= -120.0 {
+            0.0
+        } else {
+            10f64.powf(floor_db.min(0.0) / 20.0)
+        },
+        threshold: open,
+        close_threshold: close,
         hangover_ms: 320.0,
         decay_ms: 80.0,
         lookahead: true,
@@ -120,6 +142,9 @@ pub fn clean_file(
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
 
+    if (opt.studio || opt.auto_tone) && opt.stereo {
+        return Err("--studio and --auto-tone work on mono output only; leave out --stereo".into());
+    }
     let channels = if opt.stereo { 2 } else { 1 };
     let audio = decode(&input, channels)?;
     let total = audio.frames();
@@ -154,13 +179,17 @@ pub fn clean_file(
             if let (Err(e), true) = (&made, opt.no_fallback) {
                 return Err(format!("{} unavailable: {e}", spec.engine.label()));
             }
-            // Like the app: if DPDFNet (Voice HD, the default) cannot load, use RNNoise.
-            if let (Err(e), true) = (&made, models.is_empty() && spec.engine != Engine::RnNoise) {
+            // Like the app: if a DPDFNet model cannot load, try each lighter engine in turn.
+            while models.is_empty() {
+                let (Err(e), Some(next)) = (&made, spec.engine.lighter()) else {
+                    break;
+                };
                 eprintln!(
-                    "[WARN] {} unavailable ({e}); using RNNoise.",
-                    spec.engine.label()
+                    "[WARN] {} unavailable ({e}); using {}.",
+                    spec.engine.label(),
+                    next.label()
                 );
-                spec.engine = Engine::RnNoise;
+                spec.engine = next;
                 made = create(&spec);
             }
             match made {
@@ -179,11 +208,33 @@ pub fn clean_file(
     }
     let mut gates: Vec<AdaptiveGate> = if use_gate {
         (0..channels)
-            .map(|_| cli_gate(opt.gate_level_after_model))
+            .map(|_| {
+                cli_gate(
+                    opt.gate_level_after_model,
+                    opt.gate_floor_db,
+                    opt.gate_thresholds,
+                )
+            })
             .collect()
     } else {
         Vec::new()
     };
+    let mut studio = Studio::new();
+    // Output gain and limiter: one for the mono chain, a limiter per channel otherwise.
+    let mut output = OutputStage::new();
+    let mut limiters: Vec<Limiter> = (0..channels).map(|_| Limiter::new()).collect();
+    studio.set_enabled(opt.studio);
+    let mut eq = VoiceEq::new(f64::from(vidar_dsp::SAMPLE_RATE));
+    let mut auto_tone = AutoTone::new();
+    auto_tone.set_enabled(opt.auto_tone);
+    // Podcast voice comes with the Broadcast curve, as in the app; Auto tone adds its
+    // correction on top and keeps that curve as part of its target.
+    let tone: [f64; vidar_dsp::EQ_BANDS] = if opt.studio {
+        vidar_dsp::eq_preset("broadcast").unwrap_or_default()
+    } else {
+        [0.0; vidar_dsp::EQ_BANDS]
+    };
+    let use_eq = opt.studio || opt.auto_tone;
     let mut levelers: Vec<SpeechLeveler> = if opt.auto_level {
         (0..channels).map(|_| SpeechLeveler::default()).collect()
     } else {
@@ -222,6 +273,8 @@ pub fn clean_file(
         if channels == 1 {
             let mut f: Frame = core::array::from_fn(|i| sample(0, base + i));
             let model = models.first_mut().map(|m| m.as_mut() as &mut dyn Denoiser);
+            let auto = auto_tone.gains_db();
+            eq.set_gains(std::array::from_fn(|i| tone[i] + auto[i]));
             let (sp, rms) = if let Some(gate) = gates.first_mut() {
                 let s = process_mono_frame(
                     &mut f,
@@ -232,7 +285,9 @@ pub fn clean_file(
                     levelers.first_mut(),
                     (!opt.no_declick).then_some(&mut ts[0]),
                     0.0,
-                    None,
+                    use_eq.then_some(&mut eq),
+                    opt.studio.then_some(&mut studio),
+                    &mut output,
                 );
                 (s.speech_prob, s.input_rms_db)
             } else {
@@ -255,9 +310,16 @@ pub fn clean_file(
                 }
                 let g = gain as f32;
                 f.iter_mut().for_each(|x| *x *= g);
-                soft_limit(&mut f, 0.85);
+                if use_eq {
+                    eq.process(&mut f);
+                }
+                if opt.studio {
+                    studio.process(&mut f);
+                }
+                limiters[0].process(&mut f);
                 (sp, rms)
             };
+            auto_tone.analyze(&f, &tone);
             out[0].extend_from_slice(&f);
             if opt.report_json.is_some() {
                 telemetry.push((k, sp, rms));
@@ -297,7 +359,7 @@ pub fn clean_file(
                 if let Some(gate) = gates.get_mut(c) {
                     gate.process(&mut ch[c], master_sp, Some(master_rms));
                 }
-                soft_limit(&mut ch[c], 0.85);
+                limiters[c].process(&mut ch[c]);
                 out[c].extend_from_slice(&ch[c]);
             }
             if opt.report_json.is_some() {
@@ -458,7 +520,11 @@ mod tests {
             no_declick: false,
             gate_level_after_model: false,
             attn_limit_db: None,
+            gate_floor_db: APP_GATE_FLOOR_DB,
+            gate_thresholds: BALANCED,
             auto_level: false,
+            studio: false,
+            auto_tone: false,
             gain_db: 0.0,
             stereo: false,
             engine: Engine::RnNoise,
@@ -515,6 +581,25 @@ mod tests {
                 no_model: true,
                 auto_level: true,
                 gain_db: 3.0,
+                ..opts()
+            },
+            CleanOptions {
+                studio: true,
+                ..opts()
+            },
+            CleanOptions {
+                studio: true,
+                no_gate: true,
+                ..opts()
+            },
+            CleanOptions {
+                auto_tone: true,
+                studio: true,
+                ..opts()
+            },
+            CleanOptions {
+                auto_tone: true,
+                no_gate: true,
                 ..opts()
             },
         ]

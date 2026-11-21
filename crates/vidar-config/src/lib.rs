@@ -60,16 +60,26 @@ pub struct Config {
     pub mic_boost_db: f64,
     pub auto_level: bool,
 
-    /// Voice tone: `"off"`, a preset from [`vidar_dsp::EQ_PRESETS`], or `"custom"`.
-    pub eq_preset: String,
-    /// Band gains in dB (low to high) used when `eq_preset` is `"custom"`. A list of another
-    /// length (the five-band curve of earlier versions) reads as flat.
+    /// Voice tone: what corrects the microphone's colouring (the equalizer). `"auto"` (Auto
+    /// tone learns it), `"off"`, or one of [`MIC_FIXES`].
+    pub mic_fix: String,
+    /// Fine-tune curve: band gains in dB (low to high) added on top of the equalizer.
+    /// A list of another length (the five-band curve of earlier versions) reads as flat.
     #[serde(deserialize_with = "eq_gains_or_flat")]
     pub eq_custom_db: [f64; vidar_dsp::EQ_BANDS],
+    /// The single voice tone of earlier versions (`"off"`, a preset or `"custom"`). Read only
+    /// to move it into `mic_fix` / `eq_custom_db`; empty afterwards.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub eq_preset: String,
 
-    /// `"dpdfnet"` (Voice HD, the default) or `"rnnoise"` (Voice). Anything else reads as
-    /// `"rnnoise"`, which is always available.
+    /// `"dpdfnet"` (Voice HD, the default), `"dpdfnet8"` (Voice HD+) or `"rnnoise"` (Voice).
+    /// Anything else reads as `"rnnoise"`, which is always available.
     pub denoise_engine: String,
+    /// Podcast voice: the Broadcast curve plus a compressor, de-esser and saturation.
+    pub studio_sound: bool,
+    /// Auto tone (a learned correction towards a studio microphone). Follows
+    /// `mic_fix == "auto"`.
+    pub auto_tone: bool,
 
     /// True while the Windows default mic is switched to the cable (crash recovery).
     pub is_swapped: bool,
@@ -118,9 +128,12 @@ impl Default for Config {
             vad_threshold: 0.70,
             mic_boost_db: 0.0,
             auto_level: false,
-            eq_preset: "off".into(),
+            mic_fix: "off".into(),
             eq_custom_db: [0.0; vidar_dsp::EQ_BANDS],
+            eq_preset: String::new(),
             denoise_engine: "dpdfnet".into(),
+            studio_sound: false,
+            auto_tone: false,
             is_swapped: false,
             original_mic_id: None,
             cable_capture_id: None,
@@ -196,12 +209,7 @@ impl Config {
 impl Config {
     /// Clamp and normalise values a hand-edited or old file may get wrong.
     pub fn sanitize(&mut self) {
-        let engine = self.denoise_engine.trim().to_ascii_lowercase();
-        self.denoise_engine = if engine == "dpdfnet" {
-            engine
-        } else {
-            "rnnoise".into()
-        };
+        self.denoise_engine = engine_name(&self.denoise_engine);
         if !matches!(self.ui_theme.as_str(), "auto" | "light" | "dark") {
             self.ui_theme = "auto".into();
         }
@@ -210,12 +218,28 @@ impl Config {
         }
         self.vad_threshold = finite_or(self.vad_threshold, 0.70).clamp(0.05, 0.99);
         self.mic_boost_db = finite_or(self.mic_boost_db, 0.0).clamp(0.0, 30.0);
-        let preset = self.eq_preset.trim().to_ascii_lowercase();
-        self.eq_preset = if preset == "custom" || vidar_dsp::eq_preset(&preset).is_some() {
-            preset
+        // Earlier versions had one voice tone: move it into the equalizer choice (Broadcast,
+        // the curve Podcast voice uses, is kept only with Podcast voice).
+        let legacy = self.eq_preset.trim().to_ascii_lowercase();
+        if !legacy.is_empty() {
+            if legacy != "custom" {
+                self.eq_custom_db = [0.0; vidar_dsp::EQ_BANDS];
+            }
+            if MIC_FIXES.contains(&legacy.as_str()) {
+                self.mic_fix = legacy;
+            }
+            if self.auto_tone {
+                self.mic_fix = "auto".into();
+            }
+            self.eq_preset.clear();
+        }
+        let fix = self.mic_fix.trim().to_ascii_lowercase();
+        self.mic_fix = if fix == "auto" || fix == "off" || MIC_FIXES.contains(&fix.as_str()) {
+            fix
         } else {
             "off".into()
         };
+        self.auto_tone = self.mic_fix == "auto";
         for g in &mut self.eq_custom_db {
             *g = finite_or(*g, 0.0).clamp(-vidar_dsp::EQ_MAX_DB, vidar_dsp::EQ_MAX_DB);
         }
@@ -229,11 +253,7 @@ impl Config {
         }
         self.mic_profiles.retain(|id, _| !id.trim().is_empty());
         for p in self.mic_profiles.values_mut() {
-            p.denoise_engine = if p.denoise_engine.trim().eq_ignore_ascii_case("dpdfnet") {
-                "dpdfnet".into()
-            } else {
-                "rnnoise".into()
-            };
+            p.denoise_engine = engine_name(&p.denoise_engine);
             p.vad_threshold = finite_or(p.vad_threshold, 0.70).clamp(0.05, 0.99);
             p.mic_boost_db = finite_or(p.mic_boost_db, 0.0).clamp(0.0, 30.0);
         }
@@ -241,11 +261,38 @@ impl Config {
 }
 
 impl Config {
-    /// The band gains the equaliser should use now.
+    /// The band gains the equaliser should use now: the chosen equalizer, the Broadcast
+    /// curve when Podcast voice is on, and the fine-tune curve, added up (Auto tone adds its
+    /// own correction in the engine).
     pub fn eq_gains_db(&self) -> [f64; vidar_dsp::EQ_BANDS] {
-        vidar_dsp::eq_preset(&self.eq_preset).unwrap_or(self.eq_custom_db)
+        let flat = [0.0; vidar_dsp::EQ_BANDS];
+        let fix = vidar_dsp::eq_preset(&self.mic_fix).unwrap_or(flat);
+        let podcast = if self.studio_sound {
+            vidar_dsp::eq_preset("broadcast").unwrap_or(flat)
+        } else {
+            flat
+        };
+        std::array::from_fn(|i| {
+            (fix[i] + podcast[i] + self.eq_custom_db[i])
+                .clamp(-vidar_dsp::EQ_MAX_DB, vidar_dsp::EQ_MAX_DB)
+        })
+    }
+
+    /// No voice tone at all: no correction, no Podcast voice, flat fine-tune.
+    pub fn clear_tone(&mut self) {
+        self.mic_fix = "off".into();
+        self.eq_custom_db = [0.0; vidar_dsp::EQ_BANDS];
+        self.auto_tone = false;
+        self.studio_sound = false;
     }
 }
+
+/// Voice tone presets offered in the equalizer (keys of [`vidar_dsp::EQ_PRESETS`]).
+pub const MIC_FIXES: [&str; 9] = [
+    "laptop", "headset", "close", "bright", "soft", "warm", "clear", "nasal", "gaming",
+];
+
+impl Config {}
 
 /// `eq_custom_db` with exactly [`vidar_dsp::EQ_BANDS`] numbers, or flat for anything else, so
 /// an old or hand-edited curve resets only itself rather than failing the whole file.
@@ -259,6 +306,16 @@ fn eq_gains_or_flat<'de, D: serde::Deserializer<'de>>(
     Ok(gains
         .and_then(|g| g.try_into().ok())
         .unwrap_or([0.0; vidar_dsp::EQ_BANDS]))
+}
+
+/// A `denoise_engine` value as stored: one of the known names, `"rnnoise"` for anything else.
+fn engine_name(s: &str) -> String {
+    let e = s.trim().to_ascii_lowercase();
+    if matches!(e.as_str(), "dpdfnet" | "dpdfnet8") {
+        e
+    } else {
+        "rnnoise".into()
+    }
 }
 
 fn finite_or(v: f64, fallback: f64) -> f64 {
@@ -280,26 +337,85 @@ mod tests {
         assert_eq!(c.mic_boost_db, 0.0);
         assert!(!c.auto_level && !c.raw_capture);
         assert_eq!(c.denoise_engine, "dpdfnet");
-        assert_eq!(c.eq_preset, "off");
+        assert_eq!(c.mic_fix, "off");
         assert_eq!(c.eq_gains_db(), [0.0; vidar_dsp::EQ_BANDS]);
+        assert!(!c.studio_sound);
+        assert!(!c.auto_tone);
     }
 
     #[test]
-    fn eq_settings_are_sanitized_and_resolved() {
+    fn voice_hd_plus_is_kept_and_unknown_engines_read_as_voice() {
         let mut c = Config {
-            eq_preset: " Warm ".into(),
+            denoise_engine: " DPDFNet8 ".into(),
+            ..Config::default()
+        };
+        c.remember_mic("{usb}", "USB");
+        c.mic_profiles.get_mut("{usb}").unwrap().denoise_engine = "dpdfnet16".into();
+        c.sanitize();
+        assert_eq!(c.denoise_engine, "dpdfnet8");
+        assert_eq!(c.mic_profiles["{usb}"].denoise_engine, "rnnoise");
+    }
+
+    #[test]
+    fn tone_settings_are_sanitized_and_added_up() {
+        let mut c = Config {
+            mic_fix: " Warm ".into(),
+            studio_sound: true,
             eq_custom_db: [99.0, f64::NAN, -3.0, 0.0, 1.0, 0.0, -2.0],
             ..Config::default()
         };
         c.sanitize();
-        assert_eq!(c.eq_preset, "warm");
-        assert_eq!(c.eq_gains_db(), vidar_dsp::eq_preset("warm").unwrap());
+        assert_eq!(c.mic_fix, "warm");
         assert_eq!(c.eq_custom_db, [12.0, 0.0, -3.0, 0.0, 1.0, 0.0, -2.0]);
-        c.eq_preset = "custom".into();
-        assert_eq!(c.eq_gains_db(), c.eq_custom_db);
-        c.eq_preset = "loudness-war".into();
+        let (w, b) = (
+            vidar_dsp::eq_preset("warm").unwrap(),
+            vidar_dsp::eq_preset("broadcast").unwrap(),
+        );
+        let sum: [f64; vidar_dsp::EQ_BANDS] = std::array::from_fn(|i| {
+            (w[i] + b[i] + c.eq_custom_db[i]).clamp(-vidar_dsp::EQ_MAX_DB, vidar_dsp::EQ_MAX_DB)
+        });
+        assert_eq!(
+            c.eq_gains_db(),
+            sum,
+            "correction + Podcast voice's curve + fine-tune"
+        );
+        c.mic_fix = "loudness-war".into();
         c.sanitize();
-        assert_eq!(c.eq_preset, "off");
+        assert_eq!(c.mic_fix, "off");
+        c.mic_fix = "auto".into();
+        c.sanitize();
+        assert!(c.auto_tone);
+    }
+
+    /// The single voice tone of earlier versions moves into the equalizer and the
+    /// fine-tune curve, once.
+    #[test]
+    fn an_old_voice_tone_moves_into_mic_correction() {
+        let old = |json: &str| {
+            let mut c: Config = serde_json::from_str(json).unwrap();
+            c.sanitize();
+            c
+        };
+        let c = old(r#"{"eq_preset":"laptop","eq_custom_db":[1,1,1,1,1,1,1]}"#);
+        assert_eq!(c.mic_fix, "laptop");
+        assert_eq!(
+            c.eq_custom_db,
+            [0.0; vidar_dsp::EQ_BANDS],
+            "an unused curve is dropped"
+        );
+        assert!(c.eq_preset.is_empty());
+        let c = old(r#"{"eq_preset":"gaming"}"#);
+        assert_eq!(c.mic_fix, "gaming");
+        let c = old(r#"{"eq_preset":"broadcast","studio_sound":true}"#);
+        assert_eq!(c.mic_fix, "off");
+        assert!(c.studio_sound, "Podcast voice keeps its Broadcast curve");
+        let c = old(r#"{"eq_preset":"custom","eq_custom_db":[1,2,3,4,5,6,7],"auto_tone":true}"#);
+        assert_eq!(c.mic_fix, "auto");
+        assert_eq!(c.eq_custom_db, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]);
+        let c = old(r#"{"eq_preset":"off"}"#);
+        assert_eq!(c.mic_fix, "off");
+        // Written back, the old key is gone.
+        assert!(!serde_json::to_string(&c).unwrap().contains("eq_preset"));
     }
 
     #[test]
@@ -324,7 +440,6 @@ mod tests {
         let c: Config = serde_json::from_str(json).unwrap();
         assert_eq!(c.eq_custom_db, [0.0; vidar_dsp::EQ_BANDS]);
         assert_eq!(c.vad_threshold, 0.82);
-        assert_eq!(c.eq_preset, "custom");
 
         let ok = r#"{"eq_custom_db":[1.0,2.0,3.0,4.0,5.0,6.0,7.0]}"#;
         let c: Config = serde_json::from_str(ok).unwrap();

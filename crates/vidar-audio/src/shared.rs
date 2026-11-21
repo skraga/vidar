@@ -34,6 +34,10 @@ pub struct Controls {
     pub mic_boost_db: AtomicF64,
     /// Equaliser band gains in dB, low to high.
     pub eq_db: [AtomicF64; vidar_dsp::EQ_BANDS],
+    /// Studio sound (compressor, de-esser, saturation) after the equaliser.
+    pub studio: AtomicBool,
+    /// Auto tone: a learned equaliser correction on top of `eq_db`.
+    pub auto_tone: AtomicBool,
 }
 
 impl Controls {
@@ -49,6 +53,8 @@ impl Controls {
             total_gain: AtomicF64::new(s.total_gain),
             mic_boost_db: AtomicF64::new(s.mic_boost_db),
             eq_db: std::array::from_fn(|i| AtomicF64::new(s.eq_db[i])),
+            studio: AtomicBool::new(s.studio),
+            auto_tone: AtomicBool::new(s.auto_tone),
         }
     }
 
@@ -81,6 +87,9 @@ pub struct Meters {
     pub out_peak_db: AtomicU32,
     pub out_rms_db: AtomicU32,
     pub in_peak_db: AtomicU32,
+    /// RMS level of the raw microphone, dBFS: published while paused too, so a level meter
+    /// can still follow your voice.
+    pub in_rms_db: AtomicU32,
     pub gate_gain: AtomicU32,
     /// Output level per voice band (dBFS, low to high), for the live logo.
     pub bands: [AtomicU32; vidar_dsp::BANDS],
@@ -121,6 +130,7 @@ pub struct MeterSnapshot {
     pub out_peak_db: f64,
     pub out_rms_db: f64,
     pub in_peak_db: f64,
+    pub in_rms_db: f64,
     pub gate_gain: f64,
     pub bands: [f64; vidar_dsp::BANDS],
     pub frames: u64,
@@ -137,7 +147,7 @@ pub struct MeterSnapshot {
 impl Meters {
     pub fn new() -> Self {
         let m = Self::default();
-        for a in [&m.out_peak_db, &m.out_rms_db, &m.in_peak_db]
+        for a in [&m.out_peak_db, &m.out_rms_db, &m.in_peak_db, &m.in_rms_db]
             .into_iter()
             .chain(&m.bands)
         {
@@ -160,6 +170,10 @@ impl Meters {
         f32_set(&self.in_peak_db, in_peak_db);
         f32_set(&self.gate_gain, gate_gain);
         self.frames.fetch_add(1, Relaxed);
+    }
+
+    pub(crate) fn publish_input_rms(&self, db: f64) {
+        f32_set(&self.in_rms_db, db);
     }
 
     /// Record how long one frame took, as a share of its 10 ms.
@@ -189,6 +203,7 @@ impl Meters {
             out_peak_db: f32_get(&self.out_peak_db),
             out_rms_db: f32_get(&self.out_rms_db),
             in_peak_db: f32_get(&self.in_peak_db),
+            in_rms_db: f32_get(&self.in_rms_db),
             gate_gain: f32_get(&self.gate_gain),
             bands: self.bands(),
             frames: self.frames.load(Relaxed),

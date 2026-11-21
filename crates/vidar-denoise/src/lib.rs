@@ -1,4 +1,5 @@
-//! Neural noise suppressors behind `vidar_dsp::Denoiser`: RNNoise and DPDFNet, with fallback.
+//! Neural noise suppressors behind `vidar_dsp::Denoiser`: RNNoise and DPDFNet (two sizes),
+//! with fallback.
 
 #[cfg(feature = "dpdfnet")]
 pub mod dpdfnet;
@@ -42,7 +43,11 @@ pub enum Error {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Engine {
     RnNoise,
+    /// DPDFNet with two DPRNN blocks (`dpdfnet2_48khz_hr`): Voice HD.
     DpdfNet,
+    /// DPDFNet with eight DPRNN blocks (`dpdfnet8_48khz_hr`): Voice HD+. About 2.2 times the
+    /// processor work of [`Engine::DpdfNet`], same delay.
+    DpdfNet8,
 }
 
 impl Engine {
@@ -50,6 +55,7 @@ impl Engine {
     pub fn parse(s: &str) -> Engine {
         match s.trim().to_ascii_lowercase().as_str() {
             "dpdfnet" => Engine::DpdfNet,
+            "dpdfnet8" => Engine::DpdfNet8,
             _ => Engine::RnNoise,
         }
     }
@@ -57,12 +63,22 @@ impl Engine {
         match self {
             Engine::RnNoise => "rnnoise",
             Engine::DpdfNet => "dpdfnet",
+            Engine::DpdfNet8 => "dpdfnet8",
         }
     }
     pub fn label(self) -> &'static str {
         match self {
             Engine::RnNoise => "RNNoise",
             Engine::DpdfNet => "DPDFNet",
+            Engine::DpdfNet8 => "DPDFNet (large)",
+        }
+    }
+    /// The next lighter engine to try when this one cannot load.
+    pub fn lighter(self) -> Option<Engine> {
+        match self {
+            Engine::DpdfNet8 => Some(Engine::DpdfNet),
+            Engine::DpdfNet => Some(Engine::RnNoise),
+            Engine::RnNoise => None,
         }
     }
 }
@@ -73,7 +89,8 @@ pub struct DenoiseSpec {
     pub engine: Engine,
     /// DPDFNet speech detector: `"rnnoise"` or `"spectral"`.
     pub dpdfnet_vad: String,
-    /// DPDFNet model name, e.g. `"dpdfnet2_48khz_hr"`.
+    /// DPDFNet model name for [`Engine::DpdfNet`], e.g. `"dpdfnet2_48khz_hr"` (tools pick the
+    /// size this way; [`Engine::DpdfNet8`] always loads `"dpdfnet8_48khz_hr"`).
     pub dpdfnet_model: String,
     /// Extra folders to search for `.onnx` models.
     pub model_dirs: Vec<PathBuf>,
@@ -98,8 +115,10 @@ pub fn create(spec: &DenoiseSpec) -> Result<Box<dyn Denoiser>, Error> {
     match spec.engine {
         Engine::RnNoise => Ok(Box::new(RnNoise::new()?)),
         #[cfg(feature = "dpdfnet")]
-        Engine::DpdfNet => {
-            let model = if dpdfnet::MODELS.contains(&spec.dpdfnet_model.as_str()) {
+        Engine::DpdfNet | Engine::DpdfNet8 => {
+            let model = if spec.engine == Engine::DpdfNet8 {
+                dpdfnet::LARGE_MODEL
+            } else if dpdfnet::MODELS.contains(&spec.dpdfnet_model.as_str()) {
                 spec.dpdfnet_model.as_str()
             } else {
                 dpdfnet::DEFAULT_MODEL
@@ -110,20 +129,18 @@ pub fn create(spec: &DenoiseSpec) -> Result<Box<dyn Denoiser>, Error> {
             Ok(Box::new(d))
         }
         #[cfg(not(feature = "dpdfnet"))]
-        Engine::DpdfNet => Err(Error::Unsupported("DPDFNet")),
+        Engine::DpdfNet | Engine::DpdfNet8 => Err(Error::Unsupported("DPDFNet")),
     }
 }
 
-/// Build the requested engine, falling back to RNNoise, then to none (DSP-only bypass).
-/// Returns the denoiser, the engine actually running, and the errors met on the way.
+/// Build the requested engine, falling back to each lighter one in turn (Voice HD+, Voice
+/// HD, RNNoise), then to none (DSP-only bypass). Returns the denoiser, the engine actually
+/// running, and the errors met on the way.
 pub fn create_with_fallback(
     spec: &DenoiseSpec,
 ) -> (Option<Box<dyn Denoiser>>, Option<Engine>, Vec<Error>) {
     let mut errors = Vec::new();
-    let mut order = vec![spec.engine];
-    if spec.engine != Engine::RnNoise {
-        order.push(Engine::RnNoise);
-    }
+    let order = std::iter::successors(Some(spec.engine), |e| e.lighter());
     for engine in order {
         let attempt = DenoiseSpec {
             engine,
@@ -144,6 +161,10 @@ mod tests {
     #[test]
     fn engine_parse_is_lenient() {
         assert_eq!(Engine::parse(" DPDFNet "), Engine::DpdfNet);
+        assert_eq!(Engine::parse("dpdfnet8"), Engine::DpdfNet8);
+        for e in [Engine::RnNoise, Engine::DpdfNet, Engine::DpdfNet8] {
+            assert_eq!(Engine::parse(e.as_str()), e);
+        }
         assert_eq!(Engine::parse("bogus"), Engine::RnNoise);
         assert_eq!(Engine::parse(""), Engine::RnNoise);
     }
@@ -162,5 +183,14 @@ mod tests {
         assert!(d.is_some());
         assert_eq!(engine, Some(Engine::RnNoise));
         assert_eq!(errors.len(), 1);
+
+        // Voice HD+ tries Voice HD on the way down.
+        let (d, engine, errors) = create_with_fallback(&DenoiseSpec {
+            engine: Engine::DpdfNet8,
+            ..spec
+        });
+        assert!(d.is_some());
+        assert_eq!(engine, Some(Engine::RnNoise));
+        assert_eq!(errors.len(), 2);
     }
 }

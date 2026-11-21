@@ -4,4 +4,5 @@ extend-exclude = ["drivers/", "third_party/", "tests/golden/", "*.csv"]
 
 [default.extend-words]
 PN = "PN" # split from "PNGs"
+formant = "formant" # a resonance of the voice
 individuel = "individuel" # French, in the VB-CABLE signer name (THIRD_PARTY_NOTICES.md)

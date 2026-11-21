@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use vidar_config::EngineSettings;
 use vidar_dsp::{
-    levels, process_mono_frame, AdaptiveGate, Denoiser, Frame, HighPass, SpeechLeveler,
-    TransientSuppressor, VoiceBands, VoiceEq, BANDS, FRAME_SIZE,
+    levels, process_mono_frame, AdaptiveGate, AutoTone, Denoiser, Frame, HighPass, OutputStage,
+    SpeechLeveler, Studio, TransientSuppressor, VoiceBands, VoiceEq, BANDS, FRAME_SIZE,
 };
 
 use crate::shared::{Controls, Meters};
@@ -23,6 +23,9 @@ pub struct Processor {
     leveler: SpeechLeveler,
     transient: TransientSuppressor,
     eq: VoiceEq,
+    studio: Studio,
+    auto_tone: AutoTone,
+    output: OutputStage,
     bands: VoiceBands,
     model: Option<Box<dyn Denoiser>>,
     model_rx: Receiver<ModelSwap>,
@@ -51,15 +54,30 @@ impl Processor {
         Self {
             controls,
             meters,
-            hpf: HighPass::new(settings.hpf_cutoff_hz, 48_000.0),
+            hpf: HighPass::new(settings.hpf_cutoff_hz, 48_000.0).with_enabled(settings.high_pass),
             gate,
-            leveler: SpeechLeveler::default(),
+            leveler: {
+                let mut l = SpeechLeveler::default();
+                l.set_enabled(settings.auto_level);
+                l
+            },
             transient: TransientSuppressor::default(),
             eq: {
                 let mut eq = VoiceEq::new(48_000.0);
                 eq.set_gains(settings.eq_db);
                 eq
             },
+            auto_tone: {
+                let mut a = AutoTone::new();
+                a.set_enabled(settings.auto_tone);
+                a
+            },
+            studio: {
+                let mut s = Studio::new();
+                s.set_enabled(settings.studio);
+                s
+            },
+            output: OutputStage::new(),
             bands: VoiceBands::default(),
             model,
             model_rx,
@@ -135,6 +153,8 @@ impl Processor {
                 self.gate.reset();
                 self.hpf.reset();
                 self.eq.reset();
+                self.studio.reset();
+                self.output.reset();
                 self.bands.reset();
                 self.was_muted = true;
                 self.mute_flush = MUTE_FLUSH_FRAMES;
@@ -142,10 +162,11 @@ impl Processor {
             // Paused (not muted): apps get silence, but the window still shows the raw
             // microphone, so the button moves with your voice and clipping is still caught.
             // The band analysis is cheap next to the model.
-            let (in_peak, bands) = if muted {
-                (-100.0, [-100.0; BANDS])
+            let (in_peak, in_rms, bands) = if muted {
+                (-100.0, -100.0, [-100.0; BANDS])
             } else {
-                (levels(&self.frame).peak_db, self.bands.analyze(&self.frame))
+                let l = levels(&self.frame);
+                (l.peak_db, l.rms_db, self.bands.analyze(&self.frame))
             };
             self.frame.fill(0.0);
             // Run the model on silence for a few frames so its delay line holds no speech from
@@ -158,6 +179,7 @@ impl Processor {
                 self.frame.fill(0.0);
             }
             self.meters.publish(0.0, -100.0, -100.0, in_peak, 0.0);
+            self.meters.publish_input_rms(in_rms);
             self.meters.publish_bands(&bands);
             return;
         }
@@ -176,21 +198,32 @@ impl Processor {
         } else {
             None
         };
-        let hpf = if c.high_pass.load(Relaxed) {
-            Some(&mut self.hpf)
-        } else {
-            None
-        };
-        self.eq.set_gains(c.eq());
+        // Switching the rumble filter or Auto-level crossfades or glides inside them, so
+        // they always get the audio; Auto-level is skipped once it is off and back at unity.
+        self.hpf.set_enabled(c.high_pass.load(Relaxed));
+        let hpf = Some(&mut self.hpf);
+        // Auto tone adds its learned correction to the voice tone, and listens to the result.
+        let tone = c.eq();
+        self.auto_tone.set_enabled(c.auto_tone.load(Relaxed));
+        let auto = self.auto_tone.gains_db();
+        self.eq
+            .set_gains(std::array::from_fn(|i| tone[i] + auto[i]));
         let eq = if self.eq.is_flat() {
             None
         } else {
             Some(&mut self.eq)
         };
-        let leveler = if c.auto_level.load(Relaxed) {
-            Some(&mut self.leveler)
+        self.studio.set_enabled(c.studio.load(Relaxed));
+        let studio = if self.studio.is_active() {
+            Some(&mut self.studio)
         } else {
             None
+        };
+        self.leveler.set_enabled(c.auto_level.load(Relaxed));
+        let leveler = if self.leveler.is_bypassed() {
+            None
+        } else {
+            Some(&mut self.leveler)
         };
 
         let stats = process_mono_frame(
@@ -203,9 +236,14 @@ impl Processor {
             Some(&mut self.transient),
             c.mic_boost_db.get(),
             eq,
+            studio,
+            &mut self.output,
         );
         for x in self.frame.iter_mut() {
             *x = x.clamp(-1.0, 1.0);
+        }
+        if self.auto_tone.enabled() {
+            self.auto_tone.analyze(&self.frame, &tone);
         }
         let out = levels(&self.frame);
         self.meters.publish(
@@ -215,6 +253,7 @@ impl Processor {
             stats.input_peak_db,
             stats.gate_gain,
         );
+        self.meters.publish_input_rms(stats.input_rms_db);
         // What apps hear, split into bands, for the live logo.
         self.meters.publish_bands(&self.bands.analyze(&self.frame));
         // Share of the frame's 10 ms (480 samples at 48 kHz) the processing took.
@@ -435,6 +474,20 @@ mod tests {
         controls.set_eq([0.0, 0.0, 0.0, 6.0, 0.0, 0.0, 0.0]);
         p.push_interleaved(&vec![0.0f32; FRAME_SIZE], 1, &mut |_| {});
         assert_eq!(p.eq.gains_db(), [0.0, 0.0, 0.0, 6.0, 0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn studio_switch_reaches_the_chain() {
+        let (mut p, controls, _, _, _) = setup(None);
+        assert!(!p.studio.is_active());
+        controls.studio.store(true, Relaxed);
+        p.push_interleaved(&vec![0.0f32; FRAME_SIZE], 1, &mut |_| {});
+        assert!(p.studio.enabled());
+        controls.studio.store(false, Relaxed);
+        for _ in 0..2 {
+            p.push_interleaved(&vec![0.0f32; FRAME_SIZE], 1, &mut |_| {});
+        }
+        assert!(!p.studio.is_active(), "faded out and bypassed");
     }
 
     #[test]
