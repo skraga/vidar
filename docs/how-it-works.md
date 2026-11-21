@@ -85,32 +85,109 @@ IDs in the settings file, so it finds the cable even if someone renames it again
 ## The signal chain
 
 Every 10 ms (480 samples at 48 kHz, mono) one frame goes through `process_mono_frame` in
-[crates/vidar-dsp/src/chain.rs](../crates/vidar-dsp/src/chain.rs). The live engine, the Test
+[crates/vidar-dsp/src/chain.rs](../crates/vidar-dsp/src/chain.rs). The live engine, the Sound
 tab and `vidar-cli` all use this same function, so a file you clean or a test you listen to
 sounds exactly like the live microphone.
 
 | # | Step | What it does | Default |
 |---|---|---|---|
-| 1 | Rumble filter | High-pass that removes desk thumps, AC hum and handling noise below the voice | on, 80 Hz |
+| 1 | Rumble filter | 2nd-order high-pass that removes desk thumps, low rumble and handling noise below the voice. It only softens mains hum (about 9 dB at 50 Hz, 6 dB at 60 Hz) and leaves its overtones, which sit in the voice range. Behind it, a pop filter softens P and B sounds blown into the microphone (see below) | on, 80 Hz |
 | 2 | Pre-clip | Measures the input level, then gently rounds peaks above 75% so the model never sees hard clipping | always |
-| 3 | AI model | Removes noise from under the voice and estimates the probability that you are speaking | Voice HD: DPDFNet (falls back to RNNoise) |
+| 3 | AI model | Removes noise from under the voice and estimates the probability that you are speaking | Voice HD: DPDFNet (falls back to RNNoise; Voice HD+ falls back to Voice HD first) |
 | 4 | De-clicker | Dips sharp keyboard clicks and thumps by 6-8 dB with a 1 ms envelope, so the dip itself does not click | always |
-| 5 | Auto-level | Slowly raises quiet voices toward -24 dBFS, by up to +9 dB, at most 5 dB per second | off |
+| 5 | Auto-level | Slowly raises quiet voices toward -24 dBFS, by up to +9 dB, at most 5 dB per second; backs off within a frame when you get louder | off |
 | 6 | Gain | Output gain × mic boost (× 1.2 for built-in laptop mics) | 1.08 |
 | 7 | Gate | Turns the microphone down between phrases, so pauses stay quiet | always |
-| 8 | Voice tone | Seven-band equaliser (100 Hz shelf, 200 Hz, 500 Hz, 1 kHz, 2.5 kHz, 5 kHz, 8 kHz shelf, ±12 dB): one of ten presets or a custom curve. After the model, so the model hears the natural voice | when not Off |
-| 9 | Limiter | Soft limit at 85% of full scale, so Vidar AI Microphone never clips | always |
+| 8 | Voice tone | Seven-band equaliser (100 Hz shelf, 200 Hz, 500 Hz, 1 kHz, 2.5 kHz, 5 kHz, 8 kHz shelf, ±12 dB): the equalizer choice (a preset, or the Auto tone correction, see below), plus the Broadcast curve when Podcast voice is on, plus your fine-tune curve, all added up (see below). After the model, so the model hears the natural voice | when not Off |
+| 9 | Podcast voice | Compressor, de-esser and saturation (see below) | off |
+| 10 | Limiter | Turns peaks above 85% of full scale down (1 ms attack, 80 ms release), with a soft clip behind it for the first moment of a peak, so Vidar AI Microphone never clips. Adds no delay; audio below 85% passes untouched | always |
+
+Gain changes never step between two samples: Auto-level, the output gain and mic boost
+sliders glide across each 10 ms frame, and switching the rumble filter, Auto-level, the voice
+tone, Auto tone or Podcast voice crossfades or glides over 10 ms.
+
+### Pop filter
+
+A P or B blown into the microphone arrives as a burst, a few tens of milliseconds long, of
+energy below about 150 Hz that is far stronger than the voice above it. The pop filter
+compares the band below 150 Hz (a 2nd-order low-pass) with the voice above 300 Hz (a
+2nd-order high-pass) and with its own average over the last 300 ms. While the low band is
+more than 10 dB above the voice *and* 8 dB above its recent average, a low shelf at 150 Hz
+turns it down by up to 15 dB (1 ms attack, 60 ms release). The second condition keeps it off
+steady rumble such as a fan, which is the noise model's job, and for the first 300 ms after a
+start it only listens. With no pop the audio passes bit for bit. With no look-ahead it adds
+no delay, so the first 2-3 ms of a pop get through (about 1 dB of cut over the first 10 ms,
+13 dB after that).
+
+### Auto tone
+
+Auto tone (Sound → Voice tone → Equalizer → Automatic) makes any microphone sound like a good studio one. It listens to
+the finished voice, after the model, the voice tone and Podcast voice, and keeps the average
+spectrum of speech in the seven equaliser bands (10 ms frames within 15 dB of your tracked
+speaking level). Every 3 s of speech it compares that shape with a reference and moves an extra
+equaliser curve, added on top of the voice tone, half the remaining way there. Because it
+measures the result, the loop settles on the target whatever the microphone, the model or
+Podcast voice do, usually within half a minute of talking.
+
+The reference is the long-term speech spectrum of the studio recordings in VoiceBank (one male
+and one female speaker, 824 clips), measured with the same band filters. The target is that
+shape plus the response of the Podcast voice and fine-tune curves, so a sound you choose is kept rather than corrected
+away. Limits: it never adds bass at 100 Hz (that band depends mostly on the speaker's pitch),
+only takes boom away; it cuts at most 6 dB, boosts at most 4 dB in the middle bands and 3 dB
+in the top two, so a microphone with no treble (a Bluetooth headset) does not get hiss turned
+up instead. The correction is kept level-neutral across 500 Hz to 5 kHz. It starts over from
+flat when switched on.
+
+Measured (see [benchmarks](benchmarks.md#auto-tone-and-podcast-voice)): on 600 real recordings
+it rates slightly better on NISQA (+0.03, colouring +0.02) and the same on DNSMOS; on studio
+microphones, which need no correction, it moves the voice's spectrum by about 0.7 dB without
+changing PESQ, ESTOI or DNSMOS.
+
+### Podcast voice
+
+Podcast voice (called Studio sound in earlier versions, `studio_sound` in the settings file)
+turns a cleaned voice into a produced one, with fixed settings behind one switch. It is a
+style, not a quality fix: on VoiceBank+DEMAND it scores slightly below Voice HD alone (DNSMOS
+overall 3.07 vs 3.11, NISQA 4.61 vs 4.74), with the same word error rate. The parts:
+
+- **Compressor**, 4:1 with a 6 dB soft knee, 5 ms attack, 70 ms release (smoothed in dB, so a
+  soft syllable after a loud one recovers in the same time whatever the difference). Its
+  threshold sits 10 dB below your speaking level, which it learns from the 10 ms frames within
+  18 dB of that level (pauses after the gate are far below, so they do not count), so words
+  are turned down by about 7 dB, loud syllables by more. A make-up gain, moving at most 3 dB
+  per second up and 6 dB down, brings the compressed speech to about -20 dBFS, by at most
+  +15 dB or -6 dB. It is set from the measured power of speech after compression, not
+  predicted from the threshold, so the level lands on target however much the loud syllables
+  are squeezed.
+- **Pause expander**: sound more than 16 dB below your speaking level is turned down too,
+  reaching at 26 dB below the average compression your speech gets. Without it the make-up
+  gain would lift the noise left between words by that much (about 8 dB) relative to the
+  voice.
+- **De-esser**: the band above 5.5 kHz (the input minus a 2nd-order low-pass, so the two add
+  back exactly) is turned down by up to 8 dB while the top of the spectrum carries more than
+  about a third of the level, which is what S and T sounds do and vowels do not. That share is
+  measured through a separate 2nd-order high-pass, which falls 12 dB per octave: the cut band
+  itself falls only 6 dB per octave, so a bright vowel's 2-4 kHz formants would read as an S
+  and lose their air.
+- **Saturation**: asymmetric `tanh` soft clipping, mixed in at 25%, normalised so quiet sound
+  passes unchanged; the asymmetry adds the even harmonics heard as warmth. A 10 Hz high-pass
+  removes the DC it leaves.
+
+It runs after the voice tone, as a compressor follows the EQ on a mixing desk, and adds no
+delay. Switching it on or off crossfades over 10 ms. It comes with the Broadcast curve,
+which it is tuned with.
 
 ### What changes between modes
 
 Only step 3 changes. Everything else is identical.
 
-| | Voice | Voice HD |
-|---|---|---|
-| Noise removal | RNNoise | DPDFNet (ONNX Runtime) |
-| Speech probability for the gate | RNNoise | RNNoise run alongside DPDFNet (default), or spectral |
-| Model delay | 20 ms | 50 ms |
-| Gate hold / release | 320 / 80 ms | 320 / 80 ms |
+| | Voice | Voice HD | Voice HD+ |
+|---|---|---|---|
+| Noise removal | RNNoise | DPDFNet, 2 DPRNN blocks (ONNX Runtime) | DPDFNet, 8 DPRNN blocks |
+| Speech probability for the gate | RNNoise | RNNoise run alongside DPDFNet (default), or spectral | as Voice HD |
+| Model delay | 20 ms | 50 ms | 50 ms |
+| Processor work per 10 ms frame (Ryzen 7 9800X3D) | 0.26 ms | 1.2 ms | 2.9 ms |
+| Gate hold / release | 320 / 80 ms | 320 / 80 ms | 320 / 80 ms |
 
 DPDFNet has no output that says whether you are speaking. Voice HD therefore either runs
 RNNoise next to it purely for that probability (RNNoise's audio is discarded), or uses the
@@ -118,9 +195,10 @@ RNNoise next to it purely for that probability (RNNoise's audio is discarded), o
 and level are delayed to match DPDFNet's longer delay, so the same gate tuning works for both
 models.
 
-Voice HD has two model files: `dpdfnet2_48khz_hr` (default) and the larger `dpdfnet8_48khz_hr`.
-`cargo xtask fetch` downloads only the default; `cargo xtask fetch --all` also downloads the
-larger one. If the DPDFNet model or ONNX Runtime cannot load, Voice HD falls back to RNNoise.
+Voice HD runs `dpdfnet2_48khz_hr` and Voice HD+ the larger `dpdfnet8_48khz_hr`, from the same
+DPDFNet family: eight dual-path RNN blocks instead of two, about 2.2 times the processor work.
+Both ship with Vidar. If a model or ONNX Runtime cannot load, Vidar falls back one mode at a
+time: Voice HD+ to Voice HD, Voice HD to Voice.
 
 RNNoise is compiled in from C. On x86-64 it picks SSE4.1 or AVX2 network layers at run time,
 whichever the processor supports, and falls back to plain code otherwise.
@@ -143,15 +221,11 @@ turns that down. It is in [crates/vidar-dsp/src/gate.rs](../crates/vidar-dsp/src
 
 ### Strength
 
-Strength is the gate's open threshold. The close threshold follows it at the same ratio.
-
-| Strength | Opens at | Closes below |
-|---|---|---|
-| Gentle | 0.55 | 0.41 |
-| Balanced (default) | 0.70 | 0.52 |
-| Strong | 0.82 | 0.61 |
-
-Settings → *Fine-tune* accepts any value in between.
+Strength is the gate's open threshold: how sure Vidar must be that you are talking before it
+turns the microphone back up. The close threshold follows it at the same ratio (0.70 / 0.52 by
+default). Earlier versions offered Gentle (0.55), Balanced (0.70) and Strong (0.82) in the app;
+with the noise models doing most of the work they sounded almost the same, so the app now always
+uses Balanced. A different value can still be set in the settings file (`vad_threshold`).
 
 ## Routing
 
@@ -197,7 +271,7 @@ and dropouts.
 
 ## Where the delay comes from
 
-| Source | Voice | Voice HD |
+| Source | Voice | Voice HD, Voice HD+ |
 |---|---|---|
 | Model | 20 ms | 50 ms |
 | Audio buffers (capture + ring + render) | ~10 ms | ~10 ms |
@@ -218,19 +292,19 @@ built-in noise suppression or automatic volume, which can work against Vidar's p
   showing the raw microphone (a cheap band analysis, no model), so the button still moves with
   your voice and clipping is still reported. It resumes on the next check
   after an app opens the microphone, so at most about a quarter of a second is silent.
-  *Pause when no app is listening* in Settings turns this off.
+  *Pause when no app is listening* in Settings → Performance turns this off.
 - **Processor too busy.** Every frame's processing time is measured against its 10 ms. When the
   smoothed time stays above 80% of that, or more than one frame in ten is slow, for three
-  seconds, Vidar switches to the next lighter mode (Voice HD, then Voice, then the filter and
-  gate alone) and says so under Mode. After two minutes it tries the better mode again; if
+  seconds, Vidar switches to the next lighter mode (Voice HD+, then Voice HD, then Voice,
+  then the filter and gate alone) and says so on the Home tab. After two minutes it tries the better mode again; if
   that is too much within ten minutes, the next wait doubles, up to half an hour. Choosing a
-  mode yourself starts over. Settings → *When the processor is busy* limits how far it goes:
+  mode yourself starts over. Settings → Performance → *When the processor is busy* limits how far it goes:
   *Keep my mode* (never), *Down to Voice* (noise removal always stays on) or *As far as
   needed* (the default).
 
 ## Settings for each microphone
 
-Mode, strength, Boost and Auto level belong to the microphone: a laptop microphone, a USB
+Mode, Boost and Auto level (and `vad_threshold`) belong to the microphone: a laptop microphone, a USB
 microphone and a Bluetooth headset need different values. Vidar keeps them per device
 (`mic_profiles` in the settings file, by endpoint ID). Picking another microphone, or Windows
 switching its default while Vidar is off, loads that microphone's values; a microphone used

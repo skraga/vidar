@@ -78,6 +78,36 @@ SYSTEMS = {
         "--dpdfnet-model",
         "dpdfnet8_48khz_hr",
     ],
+    # Gate floor: how far the microphone is turned down between words (the app: -24 dB).
+    "voice_hd_floor_silent": [
+        "--engine",
+        "dpdfnet",
+        "--no-fallback",
+        "--dpdfnet-vad",
+        "rnnoise",
+        "--gate-floor-db",
+        "-120",
+    ],
+    "voice_hd_floor12": ["--engine", "dpdfnet", "--no-fallback", "--dpdfnet-vad", "rnnoise", "--gate-floor-db", "-12"],
+    "voice_floor12": ["--engine", "rnnoise", "--gate-floor-db", "-12"],
+    "voice_floor_silent": ["--engine", "rnnoise", "--gate-floor-db", "-120"],
+    # Strength (the app's Gentle / Strong; Balanced is the default above).
+    "voice_gentle": ["--engine", "rnnoise", "--strength", "gentle"],
+    "voice_strong": ["--engine", "rnnoise", "--strength", "strong"],
+    "voice_hd_gentle": ["--engine", "dpdfnet", "--no-fallback", "--dpdfnet-vad", "rnnoise", "--strength", "gentle"],
+    "voice_hd_strong": ["--engine", "dpdfnet", "--no-fallback", "--dpdfnet-vad", "rnnoise", "--strength", "strong"],
+    # Podcast voice (the CLI's --studio: Broadcast curve, compressor, de-esser, saturation).
+    "voice_hd_studio": ["--engine", "dpdfnet", "--no-fallback", "--dpdfnet-vad", "rnnoise", "--studio"],
+    "voice_hd_auto_tone": ["--engine", "dpdfnet", "--no-fallback", "--dpdfnet-vad", "rnnoise", "--auto-tone"],
+    "voice_hd_auto_tone_studio": [
+        "--engine",
+        "dpdfnet",
+        "--no-fallback",
+        "--dpdfnet-vad",
+        "rnnoise",
+        "--auto-tone",
+        "--studio",
+    ],
     "no_model": ["--no-model"],
 }
 
@@ -301,6 +331,30 @@ def run_systems(cli, in_dir, out_root, systems, jobs):
         for f in out.glob("*_cleaned.wav"):
             f.replace(out / (f.name[: -len("_cleaned.wav")] + ".wav"))
         print(f"[run] {s}: {time.time() - t0:.1f}s", flush=True)
+
+
+def loop_clips(src, dst, n):
+    """Each clip of `src` repeated `n` times back to back, into `dst`."""
+    import soundfile as sf
+
+    dst.mkdir(parents=True, exist_ok=True)
+    for f in Path(src).glob("*.wav"):
+        out = dst / f.name
+        if not out.exists():
+            x, sr = sf.read(f, dtype="float32")
+            _write(out, np.concatenate([x] * n), sr)
+
+
+def keep_last_pass(src, out_root, systems):
+    """Cut every output down to its last pass, the length of the original clip."""
+    import soundfile as sf
+
+    for s in systems:
+        for f in Path(out_root, s).glob("*.wav"):
+            n = sf.info(Path(src, f.name)).frames
+            if sf.info(f).frames > n:
+                y, sr = sf.read(f, dtype="float32")
+                sf.write(f, y[-n:], sr, subtype="PCM_16")
 
 
 def audio_path(work, system, name):
@@ -657,6 +711,13 @@ def main():
         p.add_argument("--whisper-model", default="turbo")
         p.add_argument("--baseline", default="noisy", help="system the others are tested against")
         p.add_argument("--limit", type=int, help="only the first N clips (quick checks)")
+        p.add_argument(
+            "--loop",
+            type=int,
+            default=1,
+            help="process each clip N times back to back and score only the last pass "
+            "(for features that learn over time, such as Auto tone)",
+        )
     p_mu = sub.add_parser("mushra")
     p_mu.add_argument("--work", required=True)
     p_mu.add_argument("--name", default="vbd")
@@ -730,7 +791,13 @@ def main():
     if not items:
         ap.error("no audio found")
     prepare(work, items)
-    run_systems(a.cli, work / "noisy", work / "out", systems, a.jobs)
+    if a.loop > 1:
+        looped = work / f"noisy_x{a.loop}"
+        loop_clips(work / "noisy", looped, a.loop)
+        run_systems(a.cli, looped, work / "out", systems, a.jobs)
+        keep_last_pass(work / "noisy", work / "out", systems)
+    else:
+        run_systems(a.cli, work / "noisy", work / "out", systems, a.jobs)
     rows = score_all(a, work, items, systems, families)
     report(a, work, rows, systems, families, groups)
     return 0

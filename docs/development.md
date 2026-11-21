@@ -12,17 +12,16 @@ the Microsoft Visual C++ Redistributable. Only `onnxruntime.dll` (Voice HD) need
 installs it when it is missing, and Voice HD falls back to Voice if it cannot load.
 
 ```shell
-cargo xtask fetch        # RNNoise weights, the DPDFNet model, ONNX Runtime, each checked against SHA-256
+cargo xtask fetch        # RNNoise weights, both DPDFNet models, ONNX Runtime, each checked against SHA-256
 cargo build --release    # target\release\vidar.exe and vidar-cli.exe
 cargo test --workspace
 ```
 
 `cargo xtask fetch` downloads into `third_party/rnnoise/model/`, `third_party/onnxruntime/`
-and `third_party/dpdfnet/`. All three are git-ignored. It fetches only the default DPDFNet
-model, `dpdfnet2_48khz_hr`; `cargo xtask fetch --all` also fetches the larger
-`dpdfnet8_48khz_hr`.
+and `third_party/dpdfnet/`. All three are git-ignored. It fetches both DPDFNet models:
+`dpdfnet2_48khz_hr` (Voice HD) and `dpdfnet8_48khz_hr` (Voice HD+); releases ship both.
 Run the fetch before building or testing: the RNNoise build needs its weights, and
-`cargo test --workspace` fails without the DPDFNet model and ONNX Runtime.
+`cargo test --workspace` fails without the DPDFNet models and ONNX Runtime.
 
 ### Checking for newer components
 
@@ -150,8 +149,8 @@ flowchart TB
   and every frame is compared with stored reference values. The bounds are about 1e-3
   (−65 dB) on levels and samples, loose enough for RNNoise picking scalar, SSE4.1 or AVX2
   code depending on the CPU, and the gate must make exactly the same open/close decisions.
-  Any real change to how Vidar sounds makes them fail. If the change is intended, the vectors
-  must be regenerated and the difference reviewed; see
+  Any real change to how Vidar sounds makes them fail. If the change is intended, regenerate
+  the vectors with `VIDAR_BLESS_GOLDEN=1` and review the difference; see
   [tests/golden/README.md](../tests/golden/README.md).
 - **Live tests** use the real default devices (muted). They are opt-in:
 
@@ -177,9 +176,9 @@ Options for `--clean`:
 
 | Option | Effect |
 |---|---|
-| `--engine rnnoise\|dpdfnet` | Model (default `dpdfnet`, falling back to `rnnoise` if it cannot load) |
+| `--engine rnnoise\|dpdfnet\|dpdfnet8` | Model: Voice, Voice HD or Voice HD+ (default `dpdfnet`; a DPDFNet model that cannot load falls back one mode at a time) |
 | `--dpdfnet-vad rnnoise\|spectral` | Speech detector for DPDFNet (default `rnnoise`) |
-| `--dpdfnet-model dpdfnet2_48khz_hr\|dpdfnet8_48khz_hr` | DPDFNet variant |
+| `--dpdfnet-model dpdfnet2_48khz_hr\|dpdfnet8_48khz_hr` | DPDFNet variant for `--engine dpdfnet` (`--engine dpdfnet8` always uses the larger one) |
 | `--no-fallback` | Fail instead of falling back to `rnnoise` when DPDFNet cannot load (used by the benchmark) |
 | `--models-dir <dir>` | Folder with the DPDFNet `.onnx` files (default: `models\` next to the program) |
 | `--no-model` | Filter and gate only (`--no-rnnoise` is an older alias) |
@@ -188,6 +187,7 @@ Options for `--clean`:
 | `--gate-level input\|output` | Level the gate tracks: the input (default) or the model's output (experimental) |
 | `--attn-limit-db <dB>` | Voice HD: the most the model may turn anything down (default: no limit) |
 | `--auto-level` | Raise quiet speech |
+| `--studio` | Podcast voice: compressor, de-esser and saturation, as the app's switch (mono only) |
 | `--gain <dB>` | Make-up gain |
 | `--stereo` | Keep stereo, gate both channels together |
 | `--report-json <file>` | Per-frame speech probability and level (single file only) |
@@ -223,20 +223,23 @@ Hand-edited values are clamped to safe ranges on load.
 
 | Key | Values | Default |
 |---|---|---|
-| `vad_threshold` | Strength: the gate's open threshold, 0.05–0.99 | `0.70` |
+| `vad_threshold` | Strength: the gate's open threshold, 0.05–0.99. The app no longer offers a choice; set it here to change it | `0.70` |
 | `mic_boost_db` | Microphone boost, 0–30 dB | `0` |
 | `auto_level` | Level quiet speech automatically | `false` |
-| `eq_preset` | Voice tone: `off`, `warm`, `clear`, `broadcast`, `bright`, `soft`, `nasal`, `gaming`, `headset`, `laptop`, `close` or `custom` | `off` |
-| `eq_custom_db` | Custom tone, seven band gains in dB (low shelf, 200 Hz, 500 Hz, 1 kHz, 2.5 kHz, 5 kHz, high shelf), ±12. Any other length reads as flat | `[0,0,0,0,0,0,0]` |
-| `denoise_engine` | `dpdfnet` (Voice HD) or `rnnoise` (Voice); anything else reads as `rnnoise` | `dpdfnet` |
+| `mic_fix` | Voice tone, equalizer: `auto` (Auto tone), `off`, or `laptop`, `headset`, `close`, `bright`, `soft`, `warm`, `clear`, `nasal`, `gaming` | `off` |
+| `eq_custom_db` | Fine-tune curve added on top of the equalizer: seven band gains in dB (low shelf, 200 Hz, 500 Hz, 1 kHz, 2.5 kHz, 5 kHz, high shelf), ±12. Any other length reads as flat | `[0,0,0,0,0,0,0]` |
+| `eq_preset` | The single voice tone of earlier versions; read once, moved into `mic_fix` and `eq_custom_db`, then dropped | |
+| `denoise_engine` | `dpdfnet` (Voice HD), `dpdfnet8` (Voice HD+) or `rnnoise` (Voice); anything else reads as `rnnoise` | `dpdfnet` |
+| `studio_sound` | Podcast voice: the Broadcast curve plus a compressor, de-esser and saturation | `false` |
+| `auto_tone` | Auto tone: learned equaliser correction towards a studio microphone. Follows `mic_fix` (`auto`) | `false` |
 | `raw_capture` | Ask Windows for the mic signal without vendor "enhancements" | `false` |
 | `start_with_windows` | Start at sign-in | `false` |
 | `ui_theme` | `auto`, `light` or `dark` | `auto` |
-| `check_updates` | Ask GitHub for the latest version about once a day | `true` |
+| `check_updates` | Ask GitHub for the latest version at start and every 8 hours | `true` |
 | `last_update_check` | When the last automatic check ran (seconds since 1970) | `0` |
-| `mic_profiles` | Mode, strength, boost and auto level last used with each microphone, by endpoint ID (with its name). The top-level values are those of the microphone in use | `{}` |
+| `mic_profiles` | Mode, strength (`vad_threshold`), boost and auto level last used with each microphone, by endpoint ID (with its name). The top-level values are those of the microphone in use | `{}` |
 | `pause_when_unused` | Skip the noise model and send silence while no app records from Vidar AI Microphone | `true` |
-| `cpu_fallback` | How far to step down while the processor cannot keep up: `off`, `voice` (Voice HD to Voice only) or `any` (down to the filter and gate alone) | `any` |
+| `cpu_fallback` | How far to step down while the processor cannot keep up: `off`, `voice` (one mode at a time, down to Voice) or `any` (down to the filter and gate alone) | `any` |
 | `input_endpoint_id`, `input_device_name` | The chosen microphone (empty: the Windows default) | — |
 
 Written by the app, not meant to be edited: `version`, `is_swapped` and `original_mic_id`

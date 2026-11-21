@@ -1,8 +1,11 @@
 # Benchmarks
 
 All quality scores come from [bench/benchmark.py](../bench/benchmark.py). It runs every clip
-through `vidar-cli`, which uses the same chain as the live app (filter, model, de-clicker,
-gate, limiter, at the default Balanced strength), and then scores the output.
+through `vidar-cli`, which uses the same chain as the live app (rumble and pop filter, model,
+de-clicker, gate, limiter, at the Balanced strength the app uses), and then scores the output. The
+gate closes to -24 dB between words, as in the app. (Results published before version 0.4
+used a command line that closed it to silence, which the app never did; they are re-measured
+here.)
 
 Every average comes with a 95% confidence interval, and every difference is checked with a
 paired bootstrap test (10,000 resamples of the same clips). The tables only call a difference
@@ -21,9 +24,11 @@ set here that can show what Voice HD does above 8 kHz.
 |---|---|---|---|---|---|---|
 | Clean reference | | | 4.62 | 3.22 | 1.4% | |
 | Untouched | 1.97 | 0.787 | 3.00 | 2.68 | 2.5% | 0.0% |
-| Voice | 2.12 | 0.770 | 3.32 | 2.99 | **5.5%** | **13.7%** |
-| **Voice HD** | **2.65** | **0.826** | **4.74** | **3.11** | 2.6% | 0.4% |
+| Voice | 2.12 | 0.771 | 3.31 | 2.97 | **5.5%** | **13.7%** |
+| Voice, no gate | 2.12 | 0.772 | 3.26 | 2.93 | **5.5%** | **13.3%** |
+| **Voice HD** | **2.71** | **0.836** | **4.74** | **3.12** | 2.6% | 0.4% |
 | Voice HD, no gate | 2.82 | 0.844 | 4.70 | 3.10 | 2.6% | 0.3% |
+| Voice HD+ | 2.63 | 0.830 | **4.79** | **3.12** | 2.4% | 0.7% |
 
 - **PESQ** (wideband, ITU-T P.862.2, 1-4.5) and **ESTOI** (intelligibility, 0-1) compare the
   output with the clean take. ESTOI is the newer form of STOI and copes better with noise that
@@ -45,13 +50,19 @@ What it shows:
 - **Voice HD is clearly better than Voice on every score here.**
 - **Voice costs words.** It doubles the word error rate (2.5% → 5.5%), lowers ESTOI below the
   untouched input, and cuts about one word start in seven. NISQA's sub-scores also rate it as
-  choppier and more coloured than the input. The gate is unlikely to be the cause: on MS-SNSD
-  turning it off moves the scores by less than their margin of error (see below), so this
-  points at RNNoise itself. A "Voice, no gate" run on this set would confirm it.
+  choppier and more coloured than the input. The gate is not the cause: without it Voice
+  loses the same words (5.5%) and cuts almost as many word starts (13.3%), so this is RNNoise
+  itself.
 - **Voice HD keeps words.** Its word error rate is the same as the untouched input's.
-- **The gate does little for Voice HD here.** Without it, PESQ and ESTOI are better (2.82 vs
-  2.65) and the background scores are the same within 0.03. See
+- **The gate costs Voice HD a little reference quality, nothing a listener model hears.**
+  Without it PESQ and ESTOI are a little higher (2.82 vs 2.71, 0.844 vs 0.836), but NISQA and
+  DNSMOS are slightly lower (4.70 vs 4.74, 3.10 vs 3.12). A gate closing to -12 dB instead of
+  -24 dB gave PESQ 2.79 with the same listener scores and more room noise between words. See
   [the gate on its own](#noise-with-no-speech) for where it does help.
+- **Voice HD+ is not better than Voice HD on this set.** NISQA rates it a little higher (4.79
+  vs 4.74), DNSMOS the same (3.12), word errors within noise (2.4% vs 2.6%), but PESQ and
+  ESTOI are lower (2.63 vs 2.71). Its larger model is meant for louder, harder noise (babble,
+  traffic) than this set has.
 
 Two scores are left out of the table on purpose. **SI-SDR** falls for every configuration,
 Voice HD included, because the leveler and gate change the gain over time and SI-SDR counts any
@@ -106,20 +117,49 @@ first second is skipped while the gate settles.
 | | Left over | Noise let through | Level wobble |
 |---|---|---|---|
 | Untouched | -37 dBFS | 100% of the time | 5.5 dB |
-| Filter and gate only, no model | -47 dBFS | 53% | 11.2 dB |
-| Voice | -71 dBFS | 8% | 8.1 dB |
+| Filter and gate only, no model | -43 dBFS | 53% | 8.9 dB |
+| Voice | -70 dBFS | 8% | 8.3 dB |
 | Voice, no gate | -64 dBFS | 9% | 9.2 dB |
-| **Voice HD** | **-80 dBFS** | 9% | **5.7 dB** |
+| **Voice HD** | **-79 dBFS** | 9% | **6.0 dB** |
 | Voice HD, no gate | -77 dBFS | 10% | 6.4 dB |
 
 - **Noise let through**: the share of 10 ms frames turned down by less than 6 dB.
 - **Level wobble**: how much the leftover level jumps around, measured as the spread of its 50 ms
   levels. Above the input's own spread, this is pumping.
 
-This is where the gate earns its place: it takes another 2-6 dB off the leftover noise, most of
-all for quiet noise (12 dB more at -50 dBFS with Voice). Voice HD removes clicks and typing
+This is where the gate earns its place: it takes another 1.5 dB (Voice HD) to 5.5 dB (Voice)
+off the leftover noise, and steadies its level. Voice HD removes clicks and typing
 almost entirely (-96 dBFS). The one noise type neither model touches is "Neighbor" (speech
 through a wall), which is speech, so both let half of it through.
+
+### Auto tone and Podcast voice
+
+Both act on how the voice sounds, so they are measured against Voice HD alone (paired
+differences; * marks a real difference). Auto tone learns over half a minute, so it needs long
+recordings:
+
+- **DNS blind set, looped**: the 600 real recordings above, on real and varied microphones, each
+  played four times in a row (`--loop 4`) and scored on the last pass, once Auto tone has
+  learned that microphone. No clean reference, so DNSMOS and NISQA only.
+- **VoiceBank+DEMAND, joined**: the 824 test clips joined into 33 recordings of about a minute
+  per speaker. Studio microphones with a clean reference, so this shows what the features do to
+  a voice that needs no correction.
+
+| vs Voice HD | DNSMOS OVRL (blind) | NISQA (blind) | NISQA colour (blind) | PESQ (joined) | ESTOI (joined) | Spectral distance (joined) |
+|---|---|---|---|---|---|---|
+| + Auto tone | -0.004 | **+0.033*** | **+0.017*** | -0.004 | -0.0005* | +0.67 dB* |
+| + Podcast voice | -0.058* | -0.018 | -0.078* | -0.27* | -0.026* | -0.04 dB* |
+| + both | -0.079* | +0.035* | -0.033* | -0.26* | -0.029* | +0.87 dB* |
+
+- **Auto tone helps a little on real microphones** (NISQA, which hears the full band, rates the
+  voice and its colouring slightly better) and changes nothing on DNSMOS. On studio microphones
+  it moves the voice's spectrum away from the original by 0.7 dB on average (0.9 dB above
+  8 kHz): it corrects every voice towards an average one, so a voice that needed nothing is
+  nudged too. Word errors on the joined set: 4.7% vs 3.3%, not a significant difference.
+- **Podcast voice costs measured quality**: DNSMOS background -0.12 on the blind set (evening out
+  the voice also makes what is left between words relatively louder), colouring -0.08, and PESQ
+  -0.27 on the reference set, mostly because compression changes the dynamics on purpose. Word
+  errors are unchanged (3.0% vs 3.3%). It is a style, off unless chosen.
 
 ### Processor use
 
@@ -148,8 +188,13 @@ ready within 10 ms. The models alone, over speech (`cargo run --release -p vidar
 | Voice | 0.26 ms | 0.30 ms | 0.37 ms | 1.8 ms | 0 |
 | Voice HD | 1.14 ms | 1.27 ms | 1.61 ms | 1.6 ms | 0 |
 | Voice HD, spectral detector | 0.88 ms | 1.05 ms | 1.22 ms | 1.4 ms | 0 |
+| Voice HD+ (`dpdfnet8_48khz_hr`) | 2.86 ms | 3.65 ms | 4.18 ms | 4.7 ms | 0 |
 
-Even the slowest frame uses less than a fifth of the budget.
+For Voice HD and Voice even the slowest frame uses less than a fifth of the budget; for Voice
+HD+, less than half. Voice HD+ takes about 27% of one core (2.2 times Voice HD, measured in the
+same run, which put Voice HD at 1.2 ms per frame), so on a laptop core two to three times slower
+it gets close to the 10 ms limit, which is why the app steps down from it first when the
+processor is busy.
 
 ## Reading the numbers
 
@@ -159,15 +204,18 @@ Even the slowest frame uses less than a fifth of the budget.
 - **Voice is cheap but not free.** It still raises every "how does it sound" score, but it
   doubles word errors and cuts the start of about one word in seven, at about 2.5% of one core.
 - **The gate is for the pauses**, not for the speech. It barely changes the scores while
-  someone talks, and for Voice HD it costs a little reference quality, but it pushes the leftover
-  noise between sentences further down.
+  someone talks, and for Voice HD it costs a little reference quality (not listener-model
+  quality), but it pushes the leftover noise between sentences further down.
+- **Podcast voice is a style, not a quality gain.** On VoiceBank+DEMAND, Voice HD with Podcast
+  voice scores DNSMOS 3.07 and NISQA 4.61 against 3.11 and 4.74 without it, with the same word
+  errors (2.2% vs 2.6%, within noise).
 - These are averages. Your mic and your room decide what sounds best, which is why the app has
-  the Test tab.
+  the Sound tab.
 
 ## Running it yourself
 
-You need a release build, the DPDFNet models (`cargo xtask fetch --all`: the `voice_hd_8`
-system needs the larger model, which a plain `fetch` skips), the data sets and, for the neural scores and Whisper, a PyTorch
+You need a release build, the DPDFNet models (`cargo xtask fetch` downloads both; the
+`voice_hd_8` system is Voice HD+), the data sets and, for the neural scores and Whisper, a PyTorch
 install (they run on the GPU when there is one).
 
 ```shell
@@ -283,8 +331,8 @@ with its confidence interval.
 - **A listening test.** The export is ready; it needs listeners.
 - **Spectral speech detection for Voice HD** (`voice_hd_spectral`). If it scores as well as
   the RNNoise detector, Voice HD can stop running RNNoise alongside DPDFNet.
-- **The de-clicker after DPDFNet** (`voice_hd_no_declick`) and **the larger model**
-  (`voice_hd_8`) on the new scores. Both have been run on MS-SNSD PESQ and STOI only.
+- **The de-clicker after DPDFNet** (`voice_hd_no_declick`) and **Voice HD+, the larger model**
+  (`voice_hd_8`), on the new scores. Both have been run on MS-SNSD PESQ and STOI only.
 - **Processor use on a laptop CPU**: the figures above are from a fast desktop, and on a
   processor without AVX2 RNNoise falls back to its slower SSE4.1 or plain layers.
 - **Delay**, measured end to end in the live app instead of the figures derived from the models.
