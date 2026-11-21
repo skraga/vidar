@@ -70,7 +70,7 @@ reproduce the results: **[docs/benchmarks.md](docs/benchmarks.md)**.
 ## Get started in a minute
 
 1. **[Download](https://github.com/skraga/vidar/releases/latest)** the setup for your PC
-   (`x64` for Intel and AMD, `arm64` for Snapdragon) and run it.
+   (`amd64` for Intel and AMD, `arm64` for Snapdragon) and run it.
 2. **Turn Vidar on.** It becomes your Windows microphone, **Vidar AI Microphone**.
 3. **Talk.** Apps set to the default microphone switch over by themselves. Turn Vidar off and
    your own microphone comes straight back.

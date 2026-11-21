@@ -3,7 +3,7 @@
 # Docs: https://embarkstudios.github.io/cargo-deny/
 
 [graph]
-# Vidar only ships for Windows x64; ignore crates that are only pulled in for other platforms.
+# Vidar only ships for Windows (amd64 and arm64); ignore crates that are only pulled in for other platforms.
 targets = ["x86_64-pc-windows-msvc"]
 all-features = true
 

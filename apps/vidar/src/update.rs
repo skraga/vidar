@@ -63,15 +63,15 @@ fn github_url(url: &str) -> bool {
         .any(|p| url.starts_with(p))
 }
 
-/// Setup file names to look for, best first: `vidar-<version>-<x64|arm64>-setup.exe`. An
-/// ARM64 PC prefers the native ARM64 setup (also when this copy is the x64 build running
-/// emulated) and falls back to x64, which Windows 11 on ARM runs too.
+/// Setup file names to look for, best first: `vidar-<version>-<amd64|arm64>-setup.exe`. An
+/// ARM64 PC prefers the native ARM64 setup (also when this copy is the amd64 build running
+/// emulated) and falls back to amd64, which Windows 11 on ARM runs too.
 pub fn setup_names(version: &str, arm64: bool) -> Vec<String> {
-    let x64 = format!("vidar-{version}-x64-setup.exe");
+    let amd64 = format!("vidar-{version}-amd64-setup.exe");
     if arm64 {
-        vec![format!("vidar-{version}-arm64-setup.exe"), x64]
+        vec![format!("vidar-{version}-arm64-setup.exe"), amd64]
     } else {
-        vec![x64]
+        vec![amd64]
     }
 }
 
@@ -255,21 +255,21 @@ mod tests {
             "tag_name": "v0.3.1", "draft": false, "prerelease": false,
             "html_url": "https://github.com/skraga/vidar/releases/tag/v0.3.1",
             "assets": [
-                {"name": "vidar-0.3.1-x64-portable.zip", "size": 10,
-                 "browser_download_url": "https://github.com/skraga/vidar/releases/download/v0.3.1/vidar-0.3.1-x64-portable.zip"},
-                {"name": "vidar-0.3.1-x64-setup.exe", "size": 1234,
-                 "browser_download_url": "https://github.com/skraga/vidar/releases/download/v0.3.1/vidar-0.3.1-x64-setup.exe"},
-                {"name": "vidar-0.3.1-x64-setup.exe.sha256", "size": 90,
-                 "browser_download_url": "https://github.com/skraga/vidar/releases/download/v0.3.1/vidar-0.3.1-x64-setup.exe.sha256"}
+                {"name": "vidar-0.3.1-amd64-portable.zip", "size": 10,
+                 "browser_download_url": "https://github.com/skraga/vidar/releases/download/v0.3.1/vidar-0.3.1-amd64-portable.zip"},
+                {"name": "vidar-0.3.1-amd64-setup.exe", "size": 1234,
+                 "browser_download_url": "https://github.com/skraga/vidar/releases/download/v0.3.1/vidar-0.3.1-amd64-setup.exe"},
+                {"name": "vidar-0.3.1-amd64-setup.exe.sha256", "size": 90,
+                 "browser_download_url": "https://github.com/skraga/vidar/releases/download/v0.3.1/vidar-0.3.1-amd64-setup.exe.sha256"}
             ]}"#;
         let r = parse_release(json, false).unwrap();
         assert_eq!(r.version, "0.3.1");
         assert_eq!(r.setup.as_ref().unwrap().size, 1234);
         assert!(r.setup_sha256.unwrap().url.ends_with(".sha256"));
         assert!(r.page_url.ends_with("/v0.3.1"));
-        // A release without an ARM64 setup still updates an ARM64 PC, with the x64 one.
+        // A release without an ARM64 setup still updates an ARM64 PC, with the amd64 one.
         let r = parse_release(json, true).unwrap();
-        assert_eq!(r.setup.unwrap().name, "vidar-0.3.1-x64-setup.exe");
+        assert_eq!(r.setup.unwrap().name, "vidar-0.3.1-amd64-setup.exe");
     }
 
     fn release_with(version: &str, names: &[&str]) -> String {
@@ -293,9 +293,9 @@ mod tests {
         let json = release_with(
             "0.3.1",
             &[
-                "vidar-0.3.1-x64-portable.zip",
-                "vidar-0.3.1-x64-setup.exe",
-                "vidar-0.3.1-x64-setup.exe.sha256",
+                "vidar-0.3.1-amd64-portable.zip",
+                "vidar-0.3.1-amd64-setup.exe",
+                "vidar-0.3.1-amd64-setup.exe.sha256",
                 "vidar-0.3.1-arm64-setup.exe",
                 "vidar-0.3.1-arm64-setup.exe.sha256",
             ],
@@ -306,11 +306,11 @@ mod tests {
             arm.setup_sha256.unwrap().name,
             "vidar-0.3.1-arm64-setup.exe.sha256"
         );
-        let x64 = parse_release(&json, false).unwrap();
-        assert_eq!(x64.setup.unwrap().name, "vidar-0.3.1-x64-setup.exe");
+        let amd64 = parse_release(&json, false).unwrap();
+        assert_eq!(amd64.setup.unwrap().name, "vidar-0.3.1-amd64-setup.exe");
     }
 
-    /// Only the current names count: the x64 setup without its architecture in the name
+    /// Only the current names count: the amd64 setup without its architecture in the name
     /// (releases up to 0.3.0) is not installed automatically.
     #[test]
     fn old_names_are_not_used() {
@@ -322,20 +322,20 @@ mod tests {
         assert!(parse_release(&json, true).unwrap().setup.is_none());
     }
 
-    /// A setup without its checksum is never chosen: the ARM64 PC falls back to x64.
+    /// A setup without its checksum is never chosen: the ARM64 PC falls back to amd64.
     #[test]
     fn a_setup_needs_its_checksum() {
         let json = release_with(
             "0.3.1",
             &[
-                "vidar-0.3.1-x64-setup.exe",
-                "vidar-0.3.1-x64-setup.exe.sha256",
+                "vidar-0.3.1-amd64-setup.exe",
+                "vidar-0.3.1-amd64-setup.exe.sha256",
                 "vidar-0.3.1-arm64-setup.exe",
             ],
         );
         assert_eq!(
             parse_release(&json, true).unwrap().setup.unwrap().name,
-            "vidar-0.3.1-x64-setup.exe"
+            "vidar-0.3.1-amd64-setup.exe"
         );
     }
 
@@ -343,9 +343,9 @@ mod tests {
     fn foreign_urls_and_prereleases_are_ignored() {
         // Right names, foreign host: neither the page nor the setup is used.
         let json = r#"{"tag_name": "v0.3.1", "html_url": "https://evil.example/x",
-            "assets": [{"name": "vidar-0.3.1-x64-setup.exe", "size": 1,
+            "assets": [{"name": "vidar-0.3.1-amd64-setup.exe", "size": 1,
                         "browser_download_url": "https://evil.example/setup.exe"},
-                       {"name": "vidar-0.3.1-x64-setup.exe.sha256", "size": 1,
+                       {"name": "vidar-0.3.1-amd64-setup.exe.sha256", "size": 1,
                         "browser_download_url": "https://evil.example/setup.exe.sha256"}]}"#;
         let r = parse_release(json, false).unwrap();
         assert_eq!(r.page_url, RELEASES_PAGE);
@@ -357,7 +357,7 @@ mod tests {
     fn checksum_files_are_read_strictly() {
         let h = "AB".repeat(32);
         assert_eq!(
-            parse_sha256_file(&format!("{h}  vidar-0.3.1-x64-setup.exe\n")),
+            parse_sha256_file(&format!("{h}  vidar-0.3.1-amd64-setup.exe\n")),
             Some("ab".repeat(32))
         );
         assert_eq!(parse_sha256_file("nothex  file"), None);

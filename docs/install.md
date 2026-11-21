@@ -2,7 +2,7 @@
 
 ## Requirements
 
-Windows 10 (version 1903 or later) or Windows 11 on a 64-bit PC: Intel or AMD (x64), or ARM64
+Windows 10 (version 1903 or later) or Windows 11 on a 64-bit PC: Intel or AMD (amd64), or ARM64
 such as Snapdragon (Windows 11 only).
 
 ## Download
@@ -11,8 +11,8 @@ From the [Releases](https://github.com/skraga/vidar/releases/latest) page, downl
 
 | | Intel / AMD | ARM64 |
 |---|---|---|
-| **Setup** (recommended) | `vidar-<version>-x64-setup.exe` | `vidar-<version>-arm64-setup.exe` |
-| **Portable** | `vidar-<version>-x64-portable.zip` | `vidar-<version>-arm64-portable.zip` |
+| **Setup** (recommended) | `vidar-<version>-amd64-setup.exe` | `vidar-<version>-arm64-setup.exe` |
+| **Portable** | `vidar-<version>-amd64-portable.zip` | `vidar-<version>-arm64-portable.zip` |
 
 - **Setup** installs Vidar and the virtual microphone with one permission prompt, plus the
   Microsoft Visual C++ Runtime if your PC does not have it yet (downloaded from Microsoft).
@@ -112,7 +112,7 @@ same folder you can copy to another PC or zip up, run:
 
 ```
 cargo xtask dist         # dist\vidar
-cargo xtask installer    # dist\vidar, then dist\vidar-<version>-<x64|arm64>-setup.exe
+cargo xtask installer    # dist\vidar, then dist\vidar-<version>-<amd64|arm64>-setup.exe
 ```
 
 This fetches the models and ONNX Runtime, builds the release binaries and puts everything Vidar

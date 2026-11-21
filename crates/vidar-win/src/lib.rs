@@ -18,7 +18,7 @@ pub mod instance;
 #[cfg(windows)]
 pub mod sys;
 
-/// Is the PC itself ARM64, whatever this build is? An x64 build running emulated on
+/// Is the PC itself ARM64, whatever this build is? An amd64 build running emulated on
 /// Windows on ARM answers true, so it can move to the native ARM64 build.
 #[cfg(windows)]
 pub fn native_arm64() -> bool {

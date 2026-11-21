@@ -21,7 +21,7 @@ env:
   RUST_BACKTRACE: 1
 
 # Vidar is Windows-only (WASAPI, windows-rs, winresource, ONNX Runtime DLL, MSVC build of
-# RNNoise), so every Rust job runs on Windows: x64 on windows-latest, and the tests also on
+# RNNoise), so every Rust job runs on Windows: amd64 on windows-latest, and the tests also on
 # ARM64 (windows-11-arm). Linux/macOS would not compile apps/vidar.
 defaults:
   run:
@@ -52,7 +52,7 @@ jobs:
             third_party/rnnoise/model
             third_party/onnxruntime
             third_party/dpdfnet
-          key: vidar-assets-x64-${{ hashFiles('xtask/src/main.rs') }}
+          key: vidar-assets-amd64-${{ hashFiles('xtask/src/main.rs') }}
       - run: cargo xtask fetch
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
@@ -62,7 +62,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - arch: x64
+          - arch: amd64
             runner: windows-latest
           - arch: arm64
             runner: windows-11-arm

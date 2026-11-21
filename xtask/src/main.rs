@@ -4,7 +4,7 @@
 //!                 Voice HD+), hash-checked
 //!   dist          release build + everything it needs, licences included, in dist\vidar
 //!   installer     dist, then the setup (Inno Setup 6) and its .sha256, for this machine's
-//!                 architecture (x64 or arm64)
+//!                 architecture (amd64 or arm64)
 //!   outdated      check every bundled or downloaded component for a newer upstream version
 //!   changelog     preview the next release's changelog section (git-cliff, cliff.toml)
 //!   release <v>   set the version, write CHANGELOG.md from the commits, commit and tag
@@ -47,10 +47,20 @@ fn arch() -> &'static str {
     }
 }
 
-/// The setup's file name without `.exe`: `vidar-<version>-<x64|arm64>-setup`. The portable
-/// zip is `vidar-<version>-<arch>-portable.zip` (release workflow).
+/// The architecture in Vidar's own file names: `amd64` or `arm64`, a matching pair. (`arch()`
+/// stays `x64` where Microsoft's names need it: ONNX Runtime, the Visual C++ runtime.)
+fn file_arch() -> &'static str {
+    if cfg!(target_arch = "aarch64") {
+        "arm64"
+    } else {
+        "amd64"
+    }
+}
+
+/// The setup's file name without `.exe`: `vidar-<version>-<amd64|arm64>-setup`. The portable
+/// zip is `vidar-<version>-<amd64|arm64>-portable.zip` (release workflow).
 fn setup_base_name(version: &str) -> String {
-    format!("vidar-{version}-{}-setup", arch())
+    format!("vidar-{version}-{}-setup", file_arch())
 }
 
 fn workspace_root() -> PathBuf {
@@ -377,7 +387,7 @@ fn iscc() -> PathBuf {
 }
 
 /// `dist`, then the setup program from installer\vidar.iss for this machine's architecture:
-/// `dist\vidar-<version>-x64-setup.exe` or `dist\vidar-<version>-arm64-setup.exe`, plus
+/// `dist\vidar-<version>-amd64-setup.exe` or `dist\vidar-<version>-arm64-setup.exe`, plus
 /// `<that>.sha256`, which the app's updater checks.
 /// Needs Inno Setup 6 (`winget install JRSoftware.InnoSetup`).
 fn installer() -> Result<()> {

@@ -10,7 +10,8 @@
 ; - Installs the Microsoft Visual C++ Redistributable (needed by onnxruntime.dll, Voice HD)
 ;   when it is missing or too old: downloaded from Microsoft, signature checked, run quietly.
 ;   Without it Vidar still runs; Voice HD falls back to Voice.
-; - One script for both architectures: /DArch=x64 or /DArch=arm64.
+; - One script for both architectures: /DArch=x64 or /DArch=arm64 (Microsoft's names, used
+;   for the Visual C++ runtime). Vidar's own file names say amd64 or arm64.
 
 #ifndef AppVersion
   #error Pass /DAppVersion=x.y.z (cargo xtask installer does)
@@ -18,8 +19,13 @@
 #ifndef Arch
   #define Arch "x64"
 #endif
+#if Arch == "arm64"
+  #define FileArch "arm64"
+#else
+  #define FileArch "amd64"
+#endif
 #ifndef OutputBase
-  #define OutputBase "vidar-" + AppVersion + "-" + Arch + "-setup"
+  #define OutputBase "vidar-" + AppVersion + "-" + FileArch + "-setup"
 #endif
 ; Oldest Visual C++ runtime onnxruntime.dll 1.32 is known to work with (14.40, VS 2022 17.10).
 #define VCRedistMinMinor 40

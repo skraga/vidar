@@ -1,10 +1,10 @@
 name: Release
 
 # Push a tag like `v0.3.0` (matching [workspace.package] version in Cargo.toml; `cargo xtask
-# release 0.3.0` prepares both) to build the Windows packages and installers for x64 and
+# release 0.3.0` prepares both) to build the Windows packages and installers for amd64 and
 # ARM64, zip the packages and publish a GitHub release.
 #
-# Release files, for <arch> = x64 and arm64:
+# Release files, for <arch> = amd64 and arm64:
 #   vidar-<version>-<arch>-setup.exe     + .sha256   the app's updater looks for these
 #   vidar-<version>-<arch>-portable.zip  + .sha256
 # Tags with a suffix (`v0.3.0-rc.1`) are published as pre-releases.
@@ -41,7 +41,7 @@ jobs:
       fail-fast: true
       matrix:
         include:
-          - arch: x64
+          - arch: amd64
             runner: windows-latest
           # Native ARM64: the tests run on the hardware the build is for.
           - arch: arm64
@@ -175,7 +175,7 @@ jobs:
 
           | PC | Setup | Portable |
           |---|---|---|
-          | Most Windows PCs (Intel, AMD) | `vidar-*-x64-setup.exe` | `vidar-*-x64-portable.zip` |
+          | Most Windows PCs (Intel, AMD) | `vidar-*-amd64-setup.exe` | `vidar-*-amd64-portable.zip` |
           | Windows 11 on ARM (Snapdragon) | `vidar-*-arm64-setup.exe` | `vidar-*-arm64-portable.zip` |
 
           **Portable:** extract the zip anywhere and run `vidar.exe`. On first start Vidar offers
@@ -192,11 +192,18 @@ jobs:
           pattern: vidar-release-*
           merge-multiple: true
           path: out
+      # Uploaded as a draft, published only once every file is there: GitHub's "latest
+      # release", which the app's updater reads, never shows a release without its setups.
       - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: ${{ env.TAG }}
           name: Vidar ${{ env.TAG }}
+          draft: true
           prerelease: ${{ contains(env.TAG, '-') }}
           fail_on_unmatched_files: true
           files: out/*
           body_path: notes/release-notes.md
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
