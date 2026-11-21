@@ -3,6 +3,7 @@ name = "xtask"
 description = "Vidar build tasks: fetch models, package releases"
 version = "0.0.0"
 edition.workspace = true
+license.workspace = true
 publish = false
 
 [dependencies]
