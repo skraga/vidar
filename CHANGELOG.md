@@ -5,6 +5,16 @@ messages by [git-cliff](https://git-cliff.org) when a release is prepared
 (`cargo xtask release <version>`), and each one is published as that version's GitHub
 release notes.
 
+## 0.4.0 — 2026-11-22
+
+### New
+
+- Settings per microphone, a pause while no app listens, and a lighter mode when the processor is busy
+- The button keeps following your voice while Vidar is paused
+- Choose how far Vidar may step down when the processor is busy
+- Automatic equalizer, pop filter and Podcast voice, with a smoother limiter
+- A simpler Sound tab: click a mode to use it, the Equalizer, and a live level meter beside the waveform
+
 ## 0.3.1 — 2026-11-20
 
 ### Fixed
