@@ -57,10 +57,11 @@ pub enum TestPhase {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Option_ {
     pub mode: &'static str,
-    pub strength: &'static str,
     pub engine: &'static str,
-    pub threshold: f64,
 }
+
+/// The recommended strength (the gate's open threshold), which the app always uses now.
+pub const BALANCED: f64 = 0.70;
 
 /// Shortest recording worth comparing (2 s at 48 kHz).
 const MIN_TEST_SAMPLES: usize = 96_000;
@@ -73,43 +74,23 @@ fn track_index(t: Track) -> usize {
     }
 }
 
-/// The options compared in the voice test.
-pub const TEST_OPTIONS: [Option_; 6] = [
+/// Seconds of the recording each model is timed on, alone, for its processor figure.
+const CPU_TIMING_SECONDS: f64 = 4.0;
+
+/// The options compared in the voice test: one per mode, at the recommended (Balanced)
+/// strength.
+pub const TEST_OPTIONS: [Option_; 3] = [
     Option_ {
         mode: "Voice",
-        strength: "Gentle",
         engine: "rnnoise",
-        threshold: 0.55,
-    },
-    Option_ {
-        mode: "Voice",
-        strength: "Balanced",
-        engine: "rnnoise",
-        threshold: 0.70,
-    },
-    Option_ {
-        mode: "Voice",
-        strength: "Strong",
-        engine: "rnnoise",
-        threshold: 0.82,
     },
     Option_ {
         mode: "Voice HD",
-        strength: "Gentle",
         engine: "dpdfnet",
-        threshold: 0.55,
     },
     Option_ {
-        mode: "Voice HD",
-        strength: "Balanced",
-        engine: "dpdfnet",
-        threshold: 0.70,
-    },
-    Option_ {
-        mode: "Voice HD",
-        strength: "Strong",
-        engine: "dpdfnet",
-        threshold: 0.82,
+        mode: "Voice HD+",
+        engine: "dpdfnet8",
     },
 ];
 
@@ -118,10 +99,16 @@ pub const TEST_OPTIONS: [Option_; 6] = [
 pub struct VariantView {
     pub option: Option_,
     pub peaks: Arc<Vec<f32>>,
+    /// RMS level of each waveform bin, dBFS: how loud each moment is for apps.
+    pub levels_db: Arc<Vec<f32>>,
     pub noise_removed_db: f64,
     pub voice_change_db: f64,
     pub cpu_percent: f64,
     pub delay_ms: f64,
+    /// Level of the speech in this version, dBFS RMS (what apps would hear while you talk),
+    /// and the Boost it was made with.
+    pub speech_db: Option<f64>,
+    pub boost_db: f64,
     /// Set when the option could not run (e.g. DPDFNet unavailable).
     pub unavailable: Option<String>,
 }
@@ -222,8 +209,10 @@ pub struct View {
     pub live: Option<Arc<Meters>>,
     pub test: TestView,
     pub auto_level: bool,
-    /// Voice tone preset (`"off"`, a preset name or `"custom"`) and the custom band gains.
-    pub eq_preset: String,
+    /// Voice tone: the equalizer (`"auto"`, `"off"` or a preset), Podcast voice, and the
+    /// fine-tune curve added on top.
+    pub mic_fix: String,
+    pub studio_sound: bool,
     pub eq_custom_db: [f64; vidar_dsp::EQ_BANDS],
     pub raw_capture: bool,
     pub ui_theme: String,
@@ -263,14 +252,18 @@ pub enum Cmd {
     },
     /// Choose the version heard; switches instantly if playing.
     SelectTrack(Track),
-    /// Use a tested option (index into TEST_OPTIONS) as the setting.
+    /// Make a tested option (index into TEST_OPTIONS) the setting: its mode, at the
+    /// recommended strength.
     ApplyOption(usize),
     /// Stop playback, or discard a recording or analysis in progress.
     StopTest,
     SetAutoLevel(bool),
-    /// Choose a voice tone preset (`"off"`, a preset name or `"custom"`).
-    SetEqPreset(String),
-    /// Custom band gains; switches to `"custom"`. `save: false` while a slider is dragged.
+    /// Voice tone: the equalizer (`"auto"` for Auto tone, `"off"` or a preset name).
+    SetMicFix(String),
+    /// Podcast voice on or off.
+    SetPodcast(bool),
+    /// The fine-tune curve, added on top of the equalizer. `save: false` while a point
+    /// is dragged.
     SetEqCustom {
         gains_db: [f64; vidar_dsp::EQ_BANDS],
         save: bool,
@@ -352,8 +345,9 @@ struct Core {
     /// Version being heard: 0 = original, i + 1 = variant i.
     test_track: Arc<AtomicUsize>,
     clip: Arc<Mutex<Option<Arc<TestClip>>>>,
-    /// Voice tone for test playback: applied live, so tone changes are heard while playing.
-    test_eq: Arc<Mutex<[f64; vidar_dsp::EQ_BANDS]>>,
+    /// Voice tone and Studio sound for test playback: applied live, so changes are heard
+    /// while playing.
+    test_tone: Arc<Mutex<voice_test::LiveTone>>,
     tx: Sender<Cmd>,
     /// Tells the window and tray to quit (after an update's installer has started).
     ui_tx: Sender<crate::UiCmd>,
@@ -370,18 +364,21 @@ fn unix_now() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
-const UPDATE_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+const UPDATE_INTERVAL: Duration = Duration::from_secs(8 * 60 * 60);
+/// The first check after start waits this long, so starting with Windows stays quick.
+const UPDATE_START_DELAY: Duration = Duration::from_secs(30);
 
 /// The mode's name in the window.
 fn mode_name(m: Model) -> &'static str {
     match m {
+        Model::DpdfNet8 => "Voice HD+",
         Model::DpdfNet => "Voice HD",
         Model::RnNoise => "Voice",
     }
 }
 
-/// What the noise removal falls back to while the processor cannot keep up: from Voice HD to
-/// Voice, then to no model, and back up once there is room again.
+/// What the noise removal falls back to while the processor cannot keep up: from Voice HD+ to
+/// Voice HD, to Voice, then to no model, and back up once there is room again.
 #[derive(Debug, Default)]
 struct CpuGuard {
     /// 0 = the chosen mode; each step is one lighter (see [`CpuGuard::ladder`]).
@@ -411,12 +408,18 @@ impl CpuGuard {
     /// `limit` is the `cpu_fallback` setting: `"off"`, `"voice"` or `"any"`.
     fn ladder(chosen: Model, limit: &str) -> &'static [Option<Model>] {
         let all: &'static [Option<Model>] = match chosen {
+            Model::DpdfNet8 => &[
+                Some(Model::DpdfNet8),
+                Some(Model::DpdfNet),
+                Some(Model::RnNoise),
+                None,
+            ],
             Model::DpdfNet => &[Some(Model::DpdfNet), Some(Model::RnNoise), None],
             Model::RnNoise => &[Some(Model::RnNoise), None],
         };
         let len = match limit {
             "off" => 1,
-            // Never below Voice: Voice HD may become Voice, Voice stays Voice.
+            // Never below Voice: Voice HD+ and Voice HD may become Voice, Voice stays Voice.
             "voice" => all.iter().take_while(|m| m.is_some()).count(),
             _ => all.len(),
         };
@@ -476,6 +479,15 @@ impl CpuGuard {
     fn pause(&mut self) {
         self.last = None;
         self.over = 0;
+    }
+}
+
+/// What test playback adds on the fly (see [`voice_test::LiveTone`]).
+fn live_tone(cfg: &Config) -> voice_test::LiveTone {
+    voice_test::LiveTone {
+        eq_db: cfg.eq_gains_db(),
+        studio: cfg.studio_sound,
+        auto_tone: cfg.auto_tone,
     }
 }
 
@@ -1106,9 +1118,10 @@ impl Core {
             .map(|o| {
                 let mut cfg = self.cfg.clone();
                 cfg.denoise_engine = o.engine.into();
-                // Voice tone is added during playback instead, so it can change while you listen.
-                cfg.eq_preset = "off".into();
-                cfg.vad_threshold = o.threshold;
+                // Voice tone and Studio sound are added during playback instead, so they can
+                // change while you listen.
+                cfg.clear_tone();
+                cfg.vad_threshold = BALANCED;
                 let settings = EngineSettings::from_config(&cfg, input.is_laptop_mic());
                 let spec = DenoiseSpec {
                     engine: Model::parse(o.engine),
@@ -1193,56 +1206,99 @@ impl Core {
             });
 
             let n = jobs.len();
-            let mut processed = Vec::with_capacity(n);
-            let mut views = Vec::with_capacity(n);
             let probs = speech_probabilities(&original);
             let speech = probs.iter().filter(|&&p| p > 0.6).count() >= 40;
-            for (i, (option, settings, spec)) in jobs.into_iter().enumerate() {
-                if cancel.load(Relaxed) {
-                    notify(&|v| {
-                        v.test = TestView {
-                            max_seconds: v.test.max_seconds,
-                            ..TestView::default()
+            // The versions are independent and each model runs on one thread, so they run side
+            // by side, one per physical core (about half the logical ones). Their timing is not
+            // used: the processor figure is measured separately below, one model at a time.
+            let workers = std::thread::available_parallelism()
+                .map_or(2, |c| (c.get() / 2).max(1))
+                .min(n);
+            let next = AtomicUsize::new(0);
+            let done = AtomicUsize::new(0);
+            type Slot = Mutex<Option<(VariantView, Vec<f32>)>>;
+            let slots: Vec<Slot> = (0..n).map(|_| Mutex::new(None)).collect();
+            std::thread::scope(|scope| {
+                for _ in 0..workers {
+                    scope.spawn(|| loop {
+                        let i = next.fetch_add(1, Relaxed);
+                        if i >= n || cancel.load(Relaxed) {
+                            break;
                         }
+                        let (option, settings, spec) = &jobs[i];
+                        let (model, unavailable) = if settings.denoise_enabled {
+                            match vidar_denoise::create(spec) {
+                                Ok(m) => (Some(m), None),
+                                Err(e) => (None, Some(e.to_string())),
+                            }
+                        } else {
+                            (None, None)
+                        };
+                        let out = voice_test::process(&original, settings, model);
+                        let m = voice_test::metrics(&original, &out.samples, Some(&probs));
+                        let view = VariantView {
+                            option: *option,
+                            peaks: Arc::new(voice_test::peaks(&out.samples, 300)),
+                            levels_db: Arc::new(voice_test::levels_db(&out.samples, 300)),
+                            noise_removed_db: m.noise_removed_db,
+                            voice_change_db: m.voice_change_db,
+                            cpu_percent: out.cpu_percent,
+                            delay_ms: out.delay_ms,
+                            speech_db: speech_level_db(&out.samples, &probs),
+                            boost_db: settings.mic_boost_db,
+                            unavailable,
+                        };
+                        if let Ok(mut slot) = slots[i].lock() {
+                            *slot = Some((view, out.samples));
+                        }
+                        let k = done.fetch_add(1, Relaxed) + 1;
+                        notify(&|v| v.test.progress = k as f64 / n as f64);
                     });
-                    busy.store(false, Relaxed);
-                    return;
                 }
-                let (model, unavailable) = if settings.denoise_enabled {
-                    match vidar_denoise::create(&spec) {
-                        Ok(m) => (Some(m), None),
-                        Err(e) => (None, Some(e.to_string())),
+            });
+            if cancel.load(Relaxed) {
+                notify(&|v| {
+                    v.test = TestView {
+                        max_seconds: v.test.max_seconds,
+                        ..TestView::default()
+                    }
+                });
+                busy.store(false, Relaxed);
+                return;
+            }
+            let mut processed = Vec::with_capacity(n);
+            let mut views = Vec::with_capacity(n);
+            for slot in slots {
+                if let Some((view, samples)) = slot.into_inner().ok().flatten() {
+                    views.push(view);
+                    processed.push(samples);
+                }
+            }
+            // Processor use: the runs above shared the processor, so their timing is not
+            // trusted. Each model is timed again on its own, one after another, on the first
+            // seconds of the recording.
+            let timing_len =
+                (CPU_TIMING_SECONDS * f64::from(vidar_audio::wasapi::SAMPLE_RATE)) as usize;
+            let timing_clip = &original[..original.len().min(timing_len)];
+            let mut timed: Vec<(&str, f64)> = Vec::new();
+            for (option, settings, spec) in &jobs {
+                if cancel.load(Relaxed) || timed.iter().any(|(e, _)| *e == option.engine) {
+                    continue;
+                }
+                let model = if settings.denoise_enabled {
+                    match vidar_denoise::create(spec) {
+                        Ok(m) => Some(m),
+                        Err(_) => continue,
                     }
                 } else {
-                    (None, None)
+                    None
                 };
-                let out = voice_test::process(&original, &settings, model);
-                let m = voice_test::metrics(&original, &out.samples, Some(&probs));
-                views.push(VariantView {
-                    option,
-                    peaks: Arc::new(voice_test::peaks(&out.samples, 300)),
-                    noise_removed_db: m.noise_removed_db,
-                    voice_change_db: m.voice_change_db,
-                    cpu_percent: out.cpu_percent,
-                    delay_ms: out.delay_ms,
-                    unavailable,
-                });
-                processed.push(out.samples);
-                notify(&|v| v.test.progress = (i + 1) as f64 / n as f64);
+                let out = voice_test::process(timing_clip, settings, model);
+                timed.push((option.engine, out.cpu_percent));
             }
-            // CPU cost depends on the model, not on the strength: report one figure per model
-            // (the least disturbed of its runs) instead of per-run timing noise.
-            let model_cpu = |o: &Option_| {
-                views
-                    .iter()
-                    .filter(|w| w.unavailable.is_none() && w.option.engine == o.engine)
-                    .map(|w| w.cpu_percent)
-                    .fold(f64::INFINITY, f64::min)
-            };
-            let cpus: Vec<f64> = views.iter().map(|w| model_cpu(&w.option)).collect();
-            for (w, c) in views.iter_mut().zip(cpus) {
-                if c.is_finite() {
-                    w.cpu_percent = c;
+            for w in &mut views {
+                if let Some((_, c)) = timed.iter().find(|(e, _)| *e == w.option.engine) {
+                    w.cpu_percent = *c;
                 }
             }
             if let Ok(mut slot) = clip.lock() {
@@ -1262,9 +1318,35 @@ impl Core {
         });
     }
 
-    fn sync_test_eq(&self) {
-        if let Ok(mut g) = self.test_eq.lock() {
-            *g = self.cfg.eq_gains_db();
+    /// A voice tone setting changed: tidy it, save it (unless a point is being dragged), and
+    /// hand it to the running engine, the test playback and the window.
+    fn apply_tone(&mut self, save: bool) {
+        self.cfg.sanitize();
+        if save {
+            self.save_now();
+        }
+        if let Some(e) = &self.engine {
+            let c = e.controls();
+            c.set_eq(self.cfg.eq_gains_db());
+            c.studio.store(self.cfg.studio_sound, Relaxed);
+            c.auto_tone.store(self.cfg.auto_tone, Relaxed);
+        }
+        self.sync_test_tone();
+        let (fix, podcast, curve) = (
+            self.cfg.mic_fix.clone(),
+            self.cfg.studio_sound,
+            self.cfg.eq_custom_db,
+        );
+        self.publish(|v| {
+            v.mic_fix = fix;
+            v.studio_sound = podcast;
+            v.eq_custom_db = curve;
+        });
+    }
+
+    fn sync_test_tone(&self) {
+        if let Ok(mut t) = self.test_tone.lock() {
+            *t = live_tone(&self.cfg);
         }
     }
 
@@ -1286,13 +1368,13 @@ impl Core {
         self.test_cancel.store(false, Relaxed);
         self.test_track.store(track_index(track), Relaxed);
         let speakers = Self::audio().and_then(|a| Self::speakers(&a));
-        let (view, repaint, busy, cancel, current, eq) = (
+        let (view, repaint, busy, cancel, current, tone) = (
             self.view.clone(),
             self.repaint.clone(),
             self.test_busy.clone(),
             self.test_cancel.clone(),
             self.test_track.clone(),
-            self.test_eq.clone(),
+            self.test_tone.clone(),
         );
         let len = clip.original.len();
         let to_sample = |f: f64| ((f.clamp(0.0, 1.0) * len as f64) as usize).min(len);
@@ -1331,7 +1413,7 @@ impl Core {
                 start,
                 range,
                 looping,
-                eq: Some(&eq),
+                tone: Some(&tone),
             };
             let r = voice_test::play(speakers.as_deref(), &pb, &cancel, &mut |pos| {
                 notify(&|v| v.test.progress = pos as f64 / len.max(1) as f64)
@@ -1348,20 +1430,13 @@ impl Core {
         });
     }
 
-    /// Make a tested option the active setting.
-    fn apply_option(&mut self, o: Option_) {
-        self.handle(Cmd::SetVad(o.threshold));
-        self.handle(Cmd::SetEngine(o.engine.into()));
-        self.status(format!("Now using {} - {}", o.mode, o.strength), Tone::Good);
-    }
-
-    /// When the next automatic check is due: a day after the last one, but not in the first
-    /// half minute after start, so starting with Windows stays quick.
+    /// When the next automatic check is due: `UPDATE_INTERVAL` after the last one, but not
+    /// sooner than `UPDATE_START_DELAY` from now.
     fn schedule_update_check(&mut self) {
         self.next_update_check = self.cfg.check_updates.then(|| {
             let since = unix_now().saturating_sub(self.cfg.last_update_check);
             let wait = UPDATE_INTERVAL.saturating_sub(Duration::from_secs(since));
-            Instant::now() + wait.max(Duration::from_secs(30))
+            Instant::now() + wait.max(UPDATE_START_DELAY)
         });
     }
 
@@ -1657,7 +1732,9 @@ impl Core {
             }
             Cmd::ApplyOption(i) => {
                 if let Some(o) = TEST_OPTIONS.get(i).copied() {
-                    self.apply_option(o);
+                    self.handle(Cmd::SetVad(BALANCED));
+                    self.handle(Cmd::SetEngine(o.engine.into()));
+                    self.status(format!("Now using {}", o.mode), Tone::Good);
                 }
             }
             Cmd::StopTest => self.test_cancel.store(true, Relaxed),
@@ -1670,33 +1747,17 @@ impl Core {
                 }
                 self.publish(|v| v.auto_level = on);
             }
-            Cmd::SetEqPreset(name) => {
-                self.cfg.eq_preset = name;
-                self.cfg.sanitize();
-                self.save_now();
-                if let Some(e) = &self.engine {
-                    e.controls().set_eq(self.cfg.eq_gains_db());
-                }
-                self.sync_test_eq();
-                let preset = self.cfg.eq_preset.clone();
-                self.publish(|v| v.eq_preset = preset);
+            Cmd::SetMicFix(fix) => {
+                self.cfg.mic_fix = fix;
+                self.apply_tone(true);
+            }
+            Cmd::SetPodcast(on) => {
+                self.cfg.studio_sound = on;
+                self.apply_tone(true);
             }
             Cmd::SetEqCustom { gains_db, save } => {
-                self.cfg.eq_preset = "custom".into();
                 self.cfg.eq_custom_db = gains_db;
-                self.cfg.sanitize();
-                if save {
-                    self.save_now();
-                }
-                if let Some(e) = &self.engine {
-                    e.controls().set_eq(self.cfg.eq_gains_db());
-                }
-                self.sync_test_eq();
-                let g = self.cfg.eq_custom_db;
-                self.publish(|v| {
-                    v.eq_preset = "custom".into();
-                    v.eq_custom_db = g;
-                });
+                self.apply_tone(save);
             }
             Cmd::SetRawCapture(on) => {
                 self.cfg.raw_capture = on;
@@ -1798,7 +1859,8 @@ pub fn spawn(
         live: None,
         test: TestView::default(),
         auto_level: cfg.auto_level,
-        eq_preset: cfg.eq_preset.clone(),
+        mic_fix: cfg.mic_fix.clone(),
+        studio_sound: cfg.studio_sound,
         eq_custom_db: cfg.eq_custom_db,
         raw_capture: cfg.raw_capture,
         ui_theme: cfg.ui_theme.clone(),
@@ -1838,7 +1900,7 @@ fn run(
         is_swapped: cfg.is_swapped,
         original_mic_id: cfg.original_mic_id.clone(),
     };
-    let cfg_eq = cfg.eq_gains_db();
+    let cfg_tone = live_tone(&cfg);
     let mut core = Core {
         cfg_path,
         cfg,
@@ -1862,13 +1924,17 @@ fn run(
         test_finish: Arc::new(AtomicBool::new(false)),
         test_track: Arc::new(AtomicUsize::new(0)),
         clip: Arc::new(Mutex::new(None)),
-        test_eq: Arc::new(Mutex::new(cfg_eq)),
+        test_tone: Arc::new(Mutex::new(cfg_tone)),
         tx,
         ui_tx,
         latest: None,
         next_update_check: None,
     };
-    core.schedule_update_check();
+    // Check once shortly after every start, then every `UPDATE_INTERVAL`.
+    core.next_update_check = core
+        .cfg
+        .check_updates
+        .then(|| Instant::now() + UPDATE_START_DELAY);
     core.refresh_devices();
     core.repair_names_on_start();
     let (s, t) = core.idle_status();
@@ -1935,6 +2001,25 @@ fn run(
 
 /// RNNoise's voice probability for each 480-sample frame: tells the test which frames are
 /// speech and which are noise. Levels alone would mistake clicks and bumps for speech.
+/// RMS level in dBFS of the 10 ms frames of `samples` where `probs` says someone talks, or
+/// `None` when there is too little speech.
+fn speech_level_db(samples: &[f32], probs: &[f64]) -> Option<f64> {
+    use vidar_dsp::FRAME_SIZE;
+    let (mut sum, mut n) = (0.0f64, 0usize);
+    for (frame, &p) in samples.as_chunks::<FRAME_SIZE>().0.iter().zip(probs) {
+        let pw = frame
+            .iter()
+            .map(|&x| f64::from(x) * f64::from(x))
+            .sum::<f64>()
+            / FRAME_SIZE as f64;
+        if p > 0.6 && pw > 1e-7 {
+            sum += pw;
+            n += 1;
+        }
+    }
+    (n >= 40).then(|| 10.0 * (sum / n as f64).log10())
+}
+
 fn speech_probabilities(samples: &[f32]) -> Vec<f64> {
     use vidar_dsp::{Denoiser, FRAME_SIZE, PCM_SCALE};
     let Ok(mut rn) = vidar_denoise::RnNoise::new() else {
@@ -1961,6 +2046,7 @@ mod tests {
             out_peak_db: -100.0,
             out_rms_db: -100.0,
             in_peak_db: -100.0,
+            in_rms_db: -100.0,
             gate_gain: 1.0,
             bands: [-100.0; vidar_dsp::BANDS],
             frames,
@@ -2041,7 +2127,15 @@ mod tests {
     /// The setting decides how far it may go: never, to Voice, or all the way.
     #[test]
     fn the_setting_limits_the_steps() {
-        use Model::{DpdfNet as Hd, RnNoise as Voice};
+        use Model::{DpdfNet as Hd, DpdfNet8 as HdPlus, RnNoise as Voice};
+        assert_eq!(
+            CpuGuard::ladder(HdPlus, "voice"),
+            [Some(HdPlus), Some(Hd), Some(Voice)]
+        );
+        assert_eq!(
+            CpuGuard::ladder(HdPlus, "any"),
+            [Some(HdPlus), Some(Hd), Some(Voice), None]
+        );
         assert_eq!(CpuGuard::ladder(Hd, "off"), [Some(Hd)]);
         assert_eq!(CpuGuard::ladder(Hd, "voice"), [Some(Hd), Some(Voice)]);
         assert_eq!(CpuGuard::ladder(Hd, "any"), [Some(Hd), Some(Voice), None]);

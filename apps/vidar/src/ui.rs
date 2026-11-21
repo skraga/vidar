@@ -9,8 +9,7 @@ use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 
 use eframe::egui::{
-    self, pos2, vec2, Align2, Color32, CornerRadius, FontId, Rect, RichText, Sense, Stroke,
-    StrokeKind,
+    self, pos2, vec2, Align2, Color32, FontId, Rect, RichText, Sense, Stroke, StrokeKind,
 };
 
 use crate::worker::{
@@ -510,24 +509,24 @@ fn tone_icon(ui: &mut egui::Ui, p: &Pal, tone: Tone) {
 // - The body says what it does, then when to change it. Plain words: no "gain",
 //   "buffer", "high-pass" or "threshold".
 // - The one-line hint under a control has no full stop.
-// - Names: "noise cancellation" is the on/off feature, "mode" is Voice / Voice HD,
-//   "strength" is Gentle / Balanced / Strong, "Vidar AI Microphone" is what apps pick.
-// - Numbers match the Test tab: Voice about 30 ms, Voice HD about 60 ms.
+// - Names: "noise cancellation" is the on/off feature, "mode" is Voice / Voice HD /
+//   Voice HD+, "Podcast voice" is the
+//   style switch in Voice tone, "Vidar AI Microphone" is what apps pick.
+// - Numbers match the Sound tab: Voice about 30 ms, Voice HD and Voice HD+ about 60 ms.
 
 const TIP_MIC: Tip = ("Microphone", "The microphone Vidar listens to. \"Windows default microphone\" follows whatever is selected in Windows Sound settings. Bluetooth headsets sound narrower while their microphone is in use.");
 const TIP_AUTO_LEVEL: Tip = ("Auto level", "Slowly makes quiet speech louder, by up to 9 dB. It never makes loud speech louder and holds still while you are silent, so background noise is not raised. Turn it on if people say you are too quiet.");
-const TIP_FINE: Tip = ("Fine-tune strength", "The same setting as Strength on the Home tab, in finer steps. Further right, Vidar must be more sure you are talking before it turns your microphone back up between words: less noise slips through, but very soft words may be cut. Further left keeps every word but lets more noise through in pauses.");
 const TIP_MIC_LEVEL: Tip = ("Microphone level", "Your microphone's own volume in Windows, the same as Input volume in Sound settings. It acts before Vidar: raise it if you sound quiet, lower it if your voice distorts. Usually better than Boost, which only makes the cleaned voice louder. Other apps, such as Discord or Teams, may change it too; Vidar shows the current value.");
 const TIP_LEVEL: Tip = ("How loud apps hear you", "Your voice after Vidar, as apps receive it. Talk normally for a few seconds. Aim for the green zone: in the grey zone people may struggle to hear you, in the red zone you may sound harsh or distorted. The white mark is where your speech usually sits.");
 const TIP_RESET: Tip = (
     "Reset to recommended",
-    "Boost off, Auto level off, Rumble filter on, strength Balanced.",
+    "Boost off, Auto level off, Rumble filter on.",
 );
 const TIP_AUTOSTART: Tip = (
     "Start with Windows",
     "Starts Vidar in the tray when you sign in. Noise cancellation stays off until you turn it on.",
 );
-const CPU_HELP: Tip = ("When the processor is busy", "If your processor cannot keep up with the chosen mode, your voice would crackle or drop out. Vidar can switch to a lighter mode for a while instead: Voice HD to Voice, and if that is still too much, to the filter and gate alone, without the noise model. It says so under Mode, and tries the better mode again after a few minutes.");
+const CPU_HELP: Tip = ("When the processor is busy", "If your processor cannot keep up with the chosen mode, your voice would crackle or drop out. Vidar can switch to a lighter mode for a while instead, one step at a time: Voice HD+ to Voice HD, then to Voice, and if that is still too much, to the filter and gate alone, without the noise model. It says so on the Home tab, and tries the better mode again after a few minutes.");
 const CPU_TIPS: [Tip; 3] = [
     (
         "Keep my mode",
@@ -535,11 +534,11 @@ const CPU_TIPS: [Tip; 3] = [
     ),
     (
         "Down to Voice",
-        "Voice HD may switch to Voice, but noise removal always stays on.",
+        "Voice HD+ and Voice HD may switch to a lighter mode, but noise removal always stays on.",
     ),
     (
         "As far as needed",
-        "Voice HD to Voice, then to the filter and gate alone if even Voice is too much. Recommended.",
+        "One mode lighter at a time, then the filter and gate alone if even Voice is too much. Recommended.",
     ),
 ];
 const TIP_PAUSE: Tip = ("Pause when no app is listening", "While no app records from Vidar AI Microphone, Vidar stops cleaning (the noise model is the part that uses the processor) and starts again the moment an app opens the microphone. Turn it off if an app misses the start of what you say.");
@@ -552,25 +551,8 @@ const TIP_LOGS: Tip = (
     "Opens the folder with Vidar's log files. Attach the newest one when reporting a problem.",
 );
 const TIP_RECORD: Tip = ("Start recording", "Records your microphone until you press Stop, up to 20 seconds. Talk normally with your usual background noise. The recording stays in memory and is never saved to disk.");
-const TIP_WAVE: Tip = ("Waveform", "Blue: your original recording. Green: the version you are hearing. The less green between your words, the more noise was removed. Click to jump there, drag to loop a part, double-click to clear the loop. With the keyboard, Tab to the waveform, then Left and Right move the playhead.");
+const TIP_WAVE: Tip = ("Waveform", "Blue: your original recording. On top, the version you are hearing, coloured by how loud apps hear each moment: green is a good level, grey too quiet to hear well (as pauses should be), red too loud. The less of it between your words, the more noise was removed. Click to jump there, drag to loop a part, double-click to clear the loop. With the keyboard, Tab to the waveform, then Left and Right move the playhead.");
 
-const STRENGTH_HELP: Tip = (
-    "Strength",
-    "In every strength the AI removes noise from under your voice. Between words Vidar also turns your microphone down; strength sets how sure it must be that you are talking before it turns it back up.",
-);
-const STRENGTH_TIPS: [Tip; 3] = [
-    ("Gentle", "Turns back up easily, so every soft word and breath is kept. Some quiet background can slip through between words. For quiet rooms and soft voices."),
-    ("Balanced (recommended)", "Keeps fans, keyboards and room noise out between words while word endings stay natural. Right for most people."),
-    ("Strong", "Stays down unless it clearly hears you. For loud rooms, mechanical keyboards or people talking nearby. Very soft words may be cut."),
-];
-const MODE_HELP: Tip = (
-    "Mode",
-    "Which AI model removes the noise. You can switch while noise cancellation is on.",
-);
-const MODE_TIPS: [Tip; 2] = [
-    ("Voice", "Light AI model (RNNoise). About 30 ms of delay and a few percent of one processor core. For games, voice chat and laptops."),
-    ("Voice HD", "Larger AI model (DPDFNet): cleaner, more natural voice in loud or echoing rooms. About 60 ms of delay and about five times the processor work of Voice. For calls, meetings and recordings."),
-];
 const BOOST_HELP: Tip = ("Boost", "Makes your voice louder for quiet microphones, after the noise is removed. Lower it if people say you are too loud or distorted.");
 const BOOST_TIPS: [Tip; 4] = [
     (
@@ -590,71 +572,61 @@ const BOOST_TIPS: [Tip; 4] = [
         "Much louder. For very quiet microphones; loud speech may distort.",
     ),
 ];
-const TONE_HELP: Tip = ("Voice tone", "Shapes how your voice sounds to others, after the noise is removed. Pick a tone, or drag the points on the curve to make your own. Double-click a point to reset it. With the keyboard, Tab to a point, then Up and Down change it and Delete resets it.");
-/// Voice tone choices, shown in rows of [`TONE_ROW`]: the presets, then "Custom".
-/// Rows: general tones, fixes for one problem, then tones for a kind of microphone.
-const TONE_PRESETS: [(&str, &str); 12] = [
-    ("off", "Off"),
-    ("warm", "Warm"),
-    ("clear", "Clear"),
-    ("broadcast", "Broadcast"),
-    ("bright", "Bright"),
-    ("soft", "Soft"),
-    ("nasal", "Less nasal"),
-    ("gaming", "Gaming"),
-    ("headset", "Headset"),
-    ("laptop", "Laptop"),
-    ("close", "Close mic"),
-    ("custom", "Custom"),
-];
-const TONE_ROW: usize = 4;
-const TONE_TIPS: [Tip; 12] = [
+const TONE_HELP: Tip = ("Voice tone", "Shapes how your voice sounds to others, after the noise is removed. The equalizer corrects what your microphone does to your voice (Automatic learns it, or choose your kind of microphone); Podcast voice makes it close and even, like a podcast host. Fine-tune adds your own curve on top: drag its points, double-click one to reset it. With the keyboard, Tab to a point, then Up and Down change it and Delete resets it.");
+const TIP_MIC_CARD: Tip = ("Microphone", "Most people never need to change these. Talk and watch the meter: change something only if it says so. Mode, Boost and Auto level are remembered for each microphone.");
+/// Equalizer: Automatic and Off, then the corrections to choose from (keys of
+/// [`vidar_dsp::EQ_PRESETS`], in [`vidar_config::MIC_FIXES`]): key, name, what it does.
+const FIX_AUTO: (&str, &str, &str) = (
+    "auto",
+    "Automatic",
+    "Learns what your microphone does to your voice and corrects it, like a studio microphone",
+);
+const FIX_OFF: (&str, &str, &str) = ("off", "Off", "Your microphone as it is, nothing corrected");
+const FIX_CHOICES: [(&str, &str, &str); 9] = [
     (
-        "Off",
-        "Your voice exactly as the microphone and the noise model deliver it.",
+        "laptop",
+        "Laptop mic",
+        "Less boxy room sound, more presence, a little less hiss",
     ),
     (
-        "Warm",
-        "Fuller and softer: more body, less edge and hiss. Good for a thin-sounding voice.",
-    ),
-    (
-        "Clear",
-        "Easier to understand: less boom and mud, more presence. Good for boomy mics.",
-    ),
-    (
-        "Broadcast",
-        "Radio-style: a little weight, less boxiness, a forward voice.",
-    ),
-    (
-        "Bright",
-        "Opens up a dull or muffled sound. Good for cheap webcams or a mic under clothing.",
-    ),
-    (
-        "Soft",
-        "Tames a harsh mic: softer S sounds and edge, the voice itself unchanged.",
-    ),
-    (
-        "Less nasal",
-        "A focused cut around 1 kHz for a honky or nasal sound.",
-    ),
-    (
-        "Gaming",
-        "Cuts through game sound and voice chat: lean lows, strong presence.",
-    ),
-    (
+        "headset",
         "Headset",
-        "For tinny gaming headsets: adds the missing lows, softens harsh upper mids.",
+        "Adds the lows a tinny headset misses, softens its harsh upper mids",
     ),
     (
-        "Laptop",
-        "For built-in laptop mics: less boxy room sound, more presence, a little less hiss.",
-    ),
-    (
+        "close",
         "Close mic",
-        "When you talk very close to the mic: removes the boom, keeps your voice clear.",
+        "Takes away the boom of talking very close to the microphone",
     ),
-    ("Custom", "Your own curve. Drag the points to change it."),
+    (
+        "bright",
+        "Dull mic",
+        "Opens up a dull or muffled sound: cheap webcams, a mic under clothing",
+    ),
+    (
+        "soft",
+        "Harsh mic",
+        "Softer S sounds and edge, the voice itself unchanged",
+    ),
+    ("warm", "Thin mic", "More body, less edge and hiss"),
+    ("clear", "Boomy mic", "Less boom and mud, more presence"),
+    (
+        "nasal",
+        "Nasal sound",
+        "A focused cut around 1 kHz for a honky or nasal sound",
+    ),
+    (
+        "gaming",
+        "Game chat",
+        "Cuts through game sound and voice chat: lean lows, strong presence",
+    ),
 ];
+const FIX_TIPS: [Tip; 3] = [
+    ("Automatic", "Listens to your voice for a few seconds at a time and gently corrects what your microphone does to it: a boomy, boxy, dull or harsh microphone is moved towards the sound of a good studio microphone. Settles within about half a minute of talking, and starts over when chosen again. Adds no delay."),
+    ("Choose", "Pick the kind of microphone or problem yourself, if you know it."),
+    ("Off", "No equalizer: your microphone as it is."),
+];
+const TIP_PODCAST: Tip = ("Podcast voice", "Close and even, like a podcast host: a radio-style curve, plus a compressor that brings loud and soft words to the same close level, a de-esser for sharp S sounds and a touch of warmth, at a steady loudness. A style rather than a cleanup: it scores slightly lower than without it on quality measures. Adds no delay.");
 /// Each band: its label under the graph, its name, and what it does (for the tooltips).
 const TONE_BANDS: [(&str, &str, &str); vidar_dsp::EQ_BANDS] = [
     (
@@ -704,21 +676,21 @@ const THEME_TIPS: [Tip; 3] = [
 ];
 const COMPARE_HELP: Tip = (
     "Compare",
-    "Every tile is your recording with a different mode (row) and strength (column). Each tile shows how much quieter your pauses got and whether your voice was kept; ★ marks the best one for you and a dot the one in use. Delay and processor use depend only on the mode, so they appear next to its name.",
+    "Every tile is your recording with a different mode. Each shows how much quieter your pauses got, whether your voice was kept, its delay and how much of the processor it uses; ★ marks the best one for you. Click a tile to hear it and use it.",
 );
 const METRIC_TIPS: [Tip; 4] = [
     ("Noise removed", "How much quieter your pauses became. Every 10 dB sounds about half as loud; 20 dB or more is very clean."),
     ("Voice", "How much your speech level changed. \"Voice intact\" means it stayed within 3 dB; a lower number means Vidar is also taking away some of your voice."),
     ("Delay", "Time from your mouth to the app. Under about 50 ms goes unnoticed in calls and games; Voice HD's 60 ms is fine for calls but may feel late if you hear yourself back."),
-    ("Processor use", "How busy this mode keeps one processor core while running, measured on this PC from your recording. The AI model runs on a single core, so this shows how much room is left. Strength does not change it."),
+    ("Processor use", "The share of this PC's whole processor this mode uses while running, as Task Manager shows it, measured on this PC from your recording with each mode running alone. The AI model runs on a single core; the share of that core shows how much room is left."),
 ];
 
 fn option_name(o: &crate::worker::Option_) -> String {
-    format!("{} - {}", o.mode, o.strength)
+    o.mode.to_string()
 }
 
 fn is_current(o: &crate::worker::Option_, v: &View) -> bool {
-    o.engine == v.engine && (o.threshold - v.vad_threshold).abs() < 0.005
+    o.engine == v.engine
 }
 
 /// The option that removes the most noise without noticeably lowering the voice.
@@ -742,6 +714,19 @@ fn cpu_text(pct: f64) -> String {
         "<1% of 1 core".into()
     } else {
         format!("~{:.0}% of 1 core", pct.round())
+    }
+}
+
+/// Share of the whole processor (all logical cores, as Task Manager shows it) for a load of
+/// `per_core` percent of one core.
+fn cpu_whole_text(per_core: f64) -> String {
+    let whole = per_core / cpu_count() as f64;
+    if whole < 0.1 {
+        "<0.1% CPU".into()
+    } else if whole < 10.0 {
+        format!("~{whole:.1}% CPU")
+    } else {
+        format!("~{whole:.0}% CPU")
     }
 }
 
@@ -1332,6 +1317,88 @@ fn styled_slider(
 }
 
 /// Mirrored peak envelope.
+/// Speech level zones, dBFS RMS: below QUIET people may struggle to hear you, above LOUD you
+/// may sound harsh. The meter and the waveform colours use the same zones.
+const LEVEL_QUIET_DB: f32 = -30.0;
+const LEVEL_LOUD_DB: f32 = -12.0;
+
+/// The waveform of a cleaned version, each moment coloured by how loud apps hear it: grey
+/// below the good zone, the accent colour in it, red above it. `offset_db` moves the levels
+/// (a Boost change since the recording was made).
+fn draw_wave_levels(
+    painter: &egui::Painter,
+    rect: Rect,
+    peaks: &[f32],
+    levels: &[f32],
+    offset_db: f32,
+    p: &Pal,
+) {
+    if peaks.is_empty() {
+        return;
+    }
+    let step = rect.width() / peaks.len() as f32;
+    let mid = rect.center().y;
+    let half = rect.height() / 2.0;
+    let gain = 10f32.powf(offset_db / 20.0);
+    for (i, &pk) in peaks.iter().enumerate() {
+        let x = rect.left() + (i as f32 + 0.5) * step;
+        let h = ((pk * gain).min(1.0).sqrt() * half).max(0.75);
+        let db = levels.get(i).copied().unwrap_or(-100.0) + offset_db;
+        let c = if db > LEVEL_LOUD_DB {
+            p.danger
+        } else if db >= LEVEL_QUIET_DB {
+            p.accent
+        } else {
+            p.track_idle
+        };
+        painter.line_segment(
+            [pos2(x, mid - h), pos2(x, mid + h)],
+            Stroke::new((step * 0.7).max(1.0), c),
+        );
+    }
+}
+
+/// The level over time as a faint area graph (-50 dBFS at the bottom, 0 at the top), each
+/// moment in its zone's colour, with the edges of the good zone as dotted lines.
+fn draw_level_graph(painter: &egui::Painter, rect: Rect, levels: &[f32], offset_db: f32, p: &Pal) {
+    const LOW: f32 = -50.0;
+    if levels.is_empty() {
+        return;
+    }
+    let y_of = |db: f32| rect.bottom() - rect.height() * ((db - LOW) / -LOW).clamp(0.0, 1.0);
+    let step = rect.width() / levels.len() as f32;
+    for (i, &l) in levels.iter().enumerate() {
+        let db = l + offset_db;
+        if db <= LOW {
+            continue;
+        }
+        let c = if db > LEVEL_LOUD_DB {
+            p.danger
+        } else if db >= LEVEL_QUIET_DB {
+            p.accent
+        } else {
+            p.track_idle
+        };
+        let x = rect.left() + i as f32 * step;
+        painter.rect_filled(
+            Rect::from_x_y_ranges(x..=x + step, y_of(db)..=rect.bottom()),
+            0.0,
+            c.gamma_multiply(0.14),
+        );
+    }
+    for (db, c) in [(LEVEL_QUIET_DB, p.accent), (LEVEL_LOUD_DB, p.danger)] {
+        let y = y_of(db);
+        let mut x = rect.left();
+        while x < rect.right() {
+            painter.line_segment(
+                [pos2(x, y), pos2((x + 3.0).min(rect.right()), y)],
+                Stroke::new(1.0, c.gamma_multiply(0.5)),
+            );
+            x += 7.0;
+        }
+    }
+}
+
 fn draw_wave(painter: &egui::Painter, rect: Rect, peaks: &[f32], color: Color32) {
     if peaks.is_empty() {
         return;
@@ -1668,8 +1735,12 @@ pub struct VidarWindow {
     show_help: bool,
     /// Asking "remove the virtual microphone?".
     confirm_uninstall: bool,
-    fine: f32,
-    fine_drag: bool,
+    /// Sound tab: the voice tone curve editor and the rarer microphone options, folded away
+    /// until asked for.
+    curve_open: bool,
+    mic_more: bool,
+    /// The equalizer correction "Choose" picks when switched to (the last one chosen).
+    last_fix: usize,
     /// Microphone level slider (Windows volume, 0..1) while it is dragged, and how many more
     /// seconds the "overloading" warning stays up.
     mic_level: f32,
@@ -1705,9 +1776,6 @@ pub struct VidarWindow {
     dialog_focused: [bool; 3],
 }
 
-/// Strength presets for the gate's open threshold.
-const STRENGTH: [(&str, f64); 3] = [("Gentle", 0.55), ("Balanced", 0.70), ("Strong", 0.82)];
-
 /// Longest voice-test recording.
 const MAX_TEST_SECONDS: f64 = 20.0;
 
@@ -1718,8 +1786,53 @@ fn fmt_secs(s: f64) -> String {
     format!("{m:.0}:{:04.1}", s - m * 60.0)
 }
 
-fn strength_index(t: f64) -> Option<usize> {
-    STRENGTH.iter().position(|(_, v)| (v - t).abs() < 0.005)
+/// Speech level apps would hear, from the test recording: the version selected (or, with the
+/// original selected, the one in use), moved by any Boost change since it was made. Auto
+/// level and the voice tone are not included.
+fn recorded_level(track: Track, v: &View) -> Option<f64> {
+    let vars = &v.test.variants;
+    let var = match track {
+        Track::Variant(i) => vars.get(i),
+        Track::Original => None,
+    }
+    .or_else(|| vars.iter().find(|x| is_current(&x.option, v)))?;
+    Some(var.speech_db? + v.mic_boost_db - var.boost_db)
+}
+
+/// What a player label names.
+#[derive(Clone, Copy)]
+enum LabelKind {
+    Model,
+    Tone,
+    Extra,
+}
+
+/// Labels for the player: the model heard, the equalizer and any extra effect, e.g.
+/// "Voice HD", "Laptop mic", "Podcast voice". The original plays without a tone.
+fn selection_labels(track: Track, v: &View) -> Vec<(String, LabelKind)> {
+    let Track::Variant(i) = track else {
+        return vec![("Original".into(), LabelKind::Extra)];
+    };
+    let Some(var) = v.test.variants.get(i) else {
+        return Vec::new();
+    };
+    let mut out = vec![(var.option.mode.to_string(), LabelKind::Model)];
+    match v.mic_fix.as_str() {
+        "auto" => out.push(("Auto tone".into(), LabelKind::Tone)),
+        "off" => {}
+        key => {
+            if let Some((_, name, _)) = FIX_CHOICES.iter().find(|(k, _, _)| *k == key) {
+                out.push(((*name).to_string(), LabelKind::Tone));
+            }
+        }
+    }
+    if v.studio_sound {
+        out.push(("Podcast voice".into(), LabelKind::Extra));
+    }
+    if v.eq_custom_db.iter().any(|&g| g != 0.0) {
+        out.push(("Fine-tuned".into(), LabelKind::Extra));
+    }
+    out
 }
 
 fn short_cable_name(v: &View) -> String {
@@ -1750,8 +1863,9 @@ impl VidarWindow {
             show_details: false,
             show_help: false,
             confirm_uninstall: false,
-            fine: v.vad_threshold as f32,
-            fine_drag: false,
+            curve_open: false,
+            mic_more: false,
+            last_fix: 0,
             mic_level: 0.0,
             mic_drag: false,
             clip_secs: 0.0,
@@ -1778,10 +1892,26 @@ impl VidarWindow {
         ui.vertical_centered(|ui| {
             // A pill-shaped tab bar: a sunken track with the active tab raised on it.
             const TABS: [(Tab, &str, &str); 4] = [
-                (Tab::Home, "Home", "Turn noise cancellation on or off, and pick your microphone, mode and strength"),
-                (Tab::Test, "Test", "Record yourself once and compare every mode and strength"),
-                (Tab::Settings, "Settings", "Appearance, microphone options, apps and Windows, troubleshooting"),
-                (Tab::About, "About", "Version, licence and the components Vidar is built on"),
+                (
+                    Tab::Home,
+                    "Home",
+                    "Turn noise cancellation on or off, and pick your microphone",
+                ),
+                (
+                    Tab::Test,
+                    "Sound",
+                    "How you sound: record yourself and compare every mode, voice tone, and your microphone's level and boost",
+                ),
+                (
+                    Tab::Settings,
+                    "Settings",
+                    "Appearance, start with Windows, performance, the virtual microphone, troubleshooting",
+                ),
+                (
+                    Tab::About,
+                    "About",
+                    "Version and updates, licence, and the components Vidar is built on",
+                ),
             ];
             let (h, pad) = (size::SEGMENT_H, size::SEGMENT_PAD);
             // 80 px per tab, less when the window is narrow or zoomed in.
@@ -1849,7 +1979,7 @@ impl VidarWindow {
                 let text_pos = r.center() - galley.size() / 2.0;
                 let text_right = text_pos.x + galley.size().x;
                 painter.galley(text_pos, galley, color);
-                // Live dot on Test while it records, analyses or plays.
+                // Live dot on Sound while it records, analyses or plays.
                 if tab == Tab::Test && busy_test {
                     let dot = if v.test.phase == TestPhase::Recording {
                         p.danger
@@ -2034,51 +2164,16 @@ impl VidarWindow {
                 ui.label(RichText::new(hint).small().color(p.warn));
             }
 
-            ui.add_space(space::SM);
-            section_help(ui, p, "Mode", MODE_HELP);
-            let mode = usize::from(v.engine == "dpdfnet");
-            if let Some(i) = segmented(ui, p, &["Voice", "Voice HD"], Some(mode), true, &MODE_TIPS)
-            {
-                self.handle.send(Cmd::SetEngine(
-                    if i == 0 { "rnnoise" } else { "dpdfnet" }.into(),
-                ));
-            }
-            let mode_hint = if mode == 0 {
-                "Light and fast: about 30 ms delay"
-            } else {
-                "Cleanest voice: about 60 ms delay, more processor work"
-            };
-            ui.label(RichText::new(mode_hint).small().color(p.muted));
             if let Some(note) = &v.cpu_note {
+                ui.add_space(space::SM);
                 ui.label(RichText::new(note).small().color(p.warn));
             }
-            ui.add_space(space::SM);
-            section_help(ui, p, "Strength", STRENGTH_HELP);
-            let names: Vec<&str> = STRENGTH.iter().map(|s| s.0).collect();
-            if let Some(i) = segmented(
-                ui,
-                p,
-                &names,
-                strength_index(v.vad_threshold),
-                true,
-                &STRENGTH_TIPS,
-            ) {
-                self.handle.send(Cmd::SetVad(STRENGTH[i].1));
-            }
-            // Same shape as the mode hint: "<what you get>: <the trade-off>".
-            let strength_hint = match strength_index(v.vad_threshold) {
-                Some(0) => "Keeps every soft word: some background between words".to_string(),
-                Some(1) => "Right for most people: quiet pauses, natural word endings".to_string(),
-                Some(_) => "Quietest pauses: very soft words may be cut".to_string(),
-                None => format!("Custom ({:.2}): set in Settings", v.vad_threshold),
-            };
-            ui.label(RichText::new(strength_hint).small().color(p.muted));
         });
     }
 
     // ------------------------------------------------------------ Test
 
-    /// The pinned part of the Test tab: record button, waveform and player. It stays in view
+    /// The pinned part of the Sound tab: record button, waveform and player. It stays in view
     /// while the comparison list below it scrolls.
     fn test_top(&mut self, ui: &mut egui::Ui, p: &Pal, v: &View) {
         let t = &v.test;
@@ -2099,7 +2194,7 @@ impl VidarWindow {
                         .color(p.text),
                 );
                 ui.label(
-                    RichText::new("Record yourself talking with your usual background noise. Vidar runs that recording through every mode and strength so you can listen and compare.")
+                    RichText::new("Record yourself talking with your usual background noise. Vidar runs that recording through every mode so you can listen and compare.")
                         .color(p.muted),
                 );
                 ui.add_space(space::SM);
@@ -2120,7 +2215,7 @@ impl VidarWindow {
                             .inner;
                         if r.tip((
                             "Stop and compare",
-                            "Ends the recording here and runs it through every mode and strength.",
+                            "Ends the recording here and runs it through every mode.",
                         ))
                         .on_disabled_hover_ui(|ui| {
                             tip_ui(
@@ -2178,7 +2273,12 @@ impl VidarWindow {
             }
             ui.add_space(space::SM);
 
-            self.waveform(ui, p, v, width);
+            // The waveform, with the live level meter on its right.
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = space::XS;
+                self.waveform(ui, p, v, width - 10.0 - space::XS);
+                self.level_meter_vertical(ui, p, v, 110.0);
+            });
 
             if ready {
                 ui.add_space(space::XS);
@@ -2190,8 +2290,8 @@ impl VidarWindow {
         });
     }
 
-    /// The scrolling part of the Test tab: the comparison, then voice tone to shape the
-    /// result while listening.
+    /// The scrolling part of the Sound tab: the comparison, voice tone to shape the result
+    /// while listening, then the microphone's own settings.
     fn test_list(&mut self, ui: &mut egui::Ui, p: &Pal, v: &View) {
         let t = &v.test;
         let playing = matches!(t.phase, TestPhase::Playing(_));
@@ -2202,6 +2302,8 @@ impl VidarWindow {
             ui.label(RichText::new(format!("Up to {MAX_TEST_SECONDS:.0} seconds. Plays on your speakers; nothing is saved to disk")).small().color(p.muted));
             ui.add_space(space::SM);
             self.tone_card(ui, p, v);
+            ui.add_space(space::SM);
+            self.microphone_card(ui, p, v);
             return;
         }
 
@@ -2228,13 +2330,15 @@ impl VidarWindow {
         ui.add_space(space::SM);
         ui.label(
             RichText::new(
-                "Click a tile to hear it. Space plays or stops, Up and Down switch versions",
+                "Click a tile to hear it and use it. Space plays or stops, Up and Down switch versions",
             )
             .small()
             .color(p.muted),
         );
         ui.add_space(space::SM);
         self.tone_card(ui, p, v);
+        ui.add_space(space::SM);
+        self.microphone_card(ui, p, v);
     }
 
     /// Start playback of the selected version from the cursor (inside the loop, if any).
@@ -2350,6 +2454,16 @@ impl VidarWindow {
                 self.selected = order[next];
                 if playing {
                     self.handle.send(Cmd::SelectTrack(self.selected));
+                }
+                // As with a click: the version chosen last is the setting.
+                if let Track::Variant(i) = self.selected {
+                    if v.test
+                        .variants
+                        .get(i)
+                        .is_some_and(|x| !is_current(&x.option, v))
+                    {
+                        self.handle.send(Cmd::ApplyOption(i));
+                    }
                 }
             }
         }
@@ -2551,12 +2665,21 @@ impl VidarWindow {
                 p.blue,
             );
         }
+        // With Auto level on, the level over time behind the waveform, in the meter's colours,
+        // with the good zone's edges as guide lines: you see Auto level lift the quiet parts.
+        if let (true, Track::Variant(i)) = (v.auto_level, self.selected) {
+            if let Some(var) = t.variants.get(i) {
+                let offset = (v.mic_boost_db - var.boost_db) as f32;
+                draw_level_graph(&painter, inner, &var.levels_db, offset, p);
+            }
+        }
         match self.selected {
             Track::Original => draw_wave(&painter, inner, orig, p.blue),
             Track::Variant(i) => {
                 draw_wave(&painter, inner, orig, p.blue.gamma_multiply(0.30));
                 if let Some(var) = t.variants.get(i) {
-                    draw_wave(&painter, inner, &var.peaks, p.accent);
+                    let offset = (v.mic_boost_db - var.boost_db) as f32;
+                    draw_wave_levels(&painter, inner, &var.peaks, &var.levels_db, offset, p);
                 }
             }
         }
@@ -2588,21 +2711,51 @@ impl VidarWindow {
         if playing {
             ui.ctx().request_repaint();
         }
-        let caption = match self.selected {
-            Track::Original => "Original".to_string(),
-            Track::Variant(i) => t
-                .variants
-                .get(i)
-                .map(|x| option_name(&x.option))
-                .unwrap_or_default(),
-        };
-        painter.text(
-            rect.left_top() + vec2(10.0, 8.0),
-            Align2::LEFT_TOP,
-            caption,
-            semi(ty::MICRO),
-            p.muted,
-        );
+        // How loud apps hear your speech in this version, in the bottom corner, in the
+        // waveform's colours.
+        if let Some(d) = recorded_level(self.selected, v).filter(|_| ready) {
+            let d = d as f32;
+            let (word, c) = if d > LEVEL_LOUD_DB {
+                ("Level: too loud", p.danger)
+            } else if d >= LEVEL_QUIET_DB {
+                ("Level: good", p.accent)
+            } else {
+                ("Level: quiet", p.warn)
+            };
+            let galley = painter.layout_no_wrap(word.to_string(), semi(ty::MICRO), c);
+            let pad = vec2(space::SM - 2.0, 1.0);
+            let size = galley.size() + 2.0 * pad;
+            let chip = Rect::from_min_size(
+                pos2(rect.right() - 8.0 - size.x, rect.bottom() - 3.0 - size.y),
+                size,
+            );
+            painter.rect_filled(chip, radius::SM, p.surface2);
+            painter.rect_filled(chip, radius::SM, c.gamma_multiply(alpha::TINT));
+            painter.galley(chip.min + pad, galley, c);
+        }
+        // What is heard, as labels in the top corner: the model, the equalizer and any
+        // extra effect.
+        if ready {
+            let mut x = rect.left() + 8.0;
+            for (text, kind) in selection_labels(self.selected, v) {
+                let c = match kind {
+                    LabelKind::Model => p.accent,
+                    LabelKind::Tone => p.blue,
+                    LabelKind::Extra => p.muted,
+                };
+                let galley = painter.layout_no_wrap(text, semi(ty::MICRO), c);
+                let pad = vec2(space::SM - 2.0, 1.0);
+                let chip =
+                    Rect::from_min_size(pos2(x, rect.top() + 3.0), galley.size() + 2.0 * pad);
+                if chip.right() > rect.right() - 8.0 {
+                    break;
+                }
+                painter.rect_filled(chip, radius::SM, p.surface2);
+                painter.rect_filled(chip, radius::SM, c.gamma_multiply(alpha::TINT));
+                painter.galley(chip.min + pad, galley, c);
+                x = chip.right() + space::XS;
+            }
+        }
         focus_ring(ui, p, &resp, radius::MD);
         resp.tip(TIP_WAVE);
     }
@@ -2670,8 +2823,8 @@ impl VidarWindow {
         });
     }
 
-    /// The comparison: the original on its own row, then one row per mode with a tile per
-    /// strength. Clicking a tile plays that version (or switches to it while playing).
+    /// The comparison: the original, then one tile per mode. Clicking a tile plays that
+    /// version and makes its mode the setting.
     fn compare_grid(
         &mut self,
         ui: &mut egui::Ui,
@@ -2682,10 +2835,7 @@ impl VidarWindow {
     ) {
         let t = &v.test;
         const GAP: f32 = 6.0;
-        const TILE_H: f32 = 52.0;
-        // The mode names take about a quarter of the row (92 px at the usual width); in a
-        // narrow or zoomed window they shrink so the three tiles keep their room.
-        let label_w = (ui.available_width() * 0.26).clamp(60.0, 92.0);
+        const TILE_H: f32 = 98.0;
 
         // Original.
         let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 38.0), Sense::click());
@@ -2757,141 +2907,22 @@ impl VidarWindow {
         }
         ui.add_space(space::MD);
 
-        // Column headers.
+        // The modes side by side, one tile each.
         let w = ui.available_width();
-        let tile_w = (w - label_w - GAP * 2.0) / 3.0;
-        let (hdr, _) = ui.allocate_exact_size(vec2(w, 16.0), Sense::hover());
-        for (k, (name, _)) in STRENGTH.iter().enumerate() {
-            let x = hdr.left() + label_w + k as f32 * (tile_w + GAP) + tile_w / 2.0;
-            ui.painter().text(
-                pos2(x, hdr.center().y),
-                Align2::CENTER_CENTER,
-                *name,
-                semi(ty::CAPTION),
-                p.muted,
+        let n = t.variants.len().max(1);
+        let tile_w = (w - GAP * (n as f32 - 1.0)) / n as f32;
+        let (row, _) = ui.allocate_exact_size(vec2(w, TILE_H), Sense::hover());
+        for i in 0..t.variants.len() {
+            let r = Rect::from_min_size(
+                pos2(row.left() + i as f32 * (tile_w + GAP), row.top()),
+                vec2(tile_w, TILE_H),
             );
+            self.compare_tile(ui, p, v, r, i, playing, best == Some(i));
         }
-        ui.add_space(space::XS);
-
-        // One row per mode.
-        let mut modes: Vec<&'static str> = Vec::new();
-        for var in &t.variants {
-            if !modes.contains(&var.option.mode) {
-                modes.push(var.option.mode);
-            }
-        }
-        for mode in modes {
-            let (row, _) = ui.allocate_exact_size(vec2(w, TILE_H), Sense::hover());
-            let first = t
-                .variants
-                .iter()
-                .find(|x| x.option.mode == mode && x.unavailable.is_none());
-            ui.painter().text(
-                pos2(row.left() + 2.0, row.center().y - 8.0),
-                Align2::LEFT_CENTER,
-                mode,
-                semi(ty::BODY),
-                p.text,
-            );
-            let narrow = label_w < 80.0;
-            let sub = first.map_or("not available".to_string(), |x| {
-                if narrow {
-                    format!("{:.0} ms", x.delay_ms)
-                } else {
-                    format!(
-                        "{:.0} ms · {}",
-                        x.delay_ms,
-                        cpu_text(x.cpu_percent).replace(" of 1 core", " CPU")
-                    )
-                }
-            });
-            ui.painter().text(
-                pos2(row.left() + 2.0, row.center().y + 9.0),
-                Align2::LEFT_CENTER,
-                sub,
-                FontId::proportional(ty::MICRO),
-                p.muted,
-            );
-            if let Some(x) = first {
-                let (cpu, delay) = (x.cpu_percent, x.delay_ms);
-                ui.interact(
-                    Rect::from_min_size(row.min, vec2(label_w - 6.0, TILE_H)),
-                    ui.scope_id().with(("mode", mode)),
-                    Sense::hover(),
-                )
-                .tip_with(|ui| {
-                    tip_ui(ui, METRIC_TIPS[2]);
-                    ui.label(RichText::new(format!("{mode}: about {delay:.0} ms.")).size(ty::CAPTION));
-                    ui.add_space(space::XS);
-                    tip_ui(ui, METRIC_TIPS[3]);
-                    let n = cpu_count();
-                    ui.label(
-                        RichText::new(format!(
-                            "{mode}: {}. This PC has {n} logical cores, so Task Manager would show about {:.1}%.",
-                            cpu_text(cpu),
-                            cpu / n as f64
-                        ))
-                        .size(ty::CAPTION),
-                    );
-                });
-            }
-            for (k, (strength, _)) in STRENGTH.iter().enumerate() {
-                let Some(i) = t
-                    .variants
-                    .iter()
-                    .position(|x| x.option.mode == mode && x.option.strength == *strength)
-                else {
-                    continue;
-                };
-                let r = Rect::from_min_size(
-                    pos2(row.left() + label_w + k as f32 * (tile_w + GAP), row.top()),
-                    vec2(tile_w, TILE_H),
-                );
-                self.compare_tile(ui, p, v, r, i, playing, best == Some(i));
-            }
-            ui.add_space(GAP);
-        }
-
-        // What is selected, and a way to use it.
-        ui.add_space(space::XS);
-        ui.horizontal(|ui| match self.selected {
-            Track::Variant(i)
-                if t.variants.get(i).is_some_and(|x| x.unavailable.is_none()) =>
-            {
-                let var = &t.variants[i];
-                ui.label(
-                    RichText::new(option_name(&var.option))
-                        .font(semi(ty::BODY))
-                        .color(p.text),
-                );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if is_current(&var.option, v) {
-                        badge(ui, p.accent.gamma_multiply(alpha::TINT), p.accent, "In use");
-                    } else if primary_tip(
-                        ui,
-                        p,
-                        "Use this",
-                        110.0,
-                        (
-                            "Use this",
-                            "Switches Vidar to this mode and strength. Voice tone stays as set below.",
-                        ),
-                    ) {
-                        self.handle.send(Cmd::ApplyOption(i));
-                    }
-                });
-            }
-            _ => {
-                ui.label(
-                    RichText::new("Pick a tile to hear your recording cleaned")
-                        .small()
-                        .color(p.muted),
-                );
-            }
-        });
     }
 
-    /// One tile in the comparison grid: noise removed, the voice verdict and badges.
+    /// One tile in the comparison: the mode, noise removed, the voice verdict, its delay and
+    /// processor use.
     #[allow(clippy::too_many_arguments)]
     fn compare_tile(
         &mut self,
@@ -2908,7 +2939,6 @@ impl VidarWindow {
         let track = Track::Variant(i);
         let available = var.unavailable.is_none();
         let selected = self.selected == track;
-        let current = is_current(&var.option, v);
         let resp = ui.interact(
             r,
             ui.scope_id().with(("tile", i)),
@@ -2932,8 +2962,6 @@ impl VidarWindow {
         painter.rect_filled(r, radius::MD, fill);
         let stroke = if selected {
             Stroke::new(size::SELECTED, p.accent)
-        } else if current {
-            Stroke::new(size::HAIRLINE, p.accent)
         } else {
             Stroke::new(size::HAIRLINE, p.ctrl_border)
         };
@@ -2950,6 +2978,13 @@ impl VidarWindow {
             focus_ring(ui, p, &resp, radius::MD);
         }
 
+        painter.text(
+            pos2(r.center().x, r.top() + 16.0),
+            Align2::CENTER_CENTER,
+            var.option.mode,
+            semi(ty::BODY),
+            p.text,
+        );
         if !available {
             painter.text(
                 r.center(),
@@ -2969,7 +3004,7 @@ impl VidarWindow {
             format!("-{:.0} dB", var.noise_removed_db)
         };
         painter.text(
-            pos2(r.center().x, r.top() + 19.0),
+            pos2(r.center().x, r.top() + 40.0),
             Align2::CENTER_CENTER,
             headline,
             semi(if r.width() < 64.0 {
@@ -2987,14 +3022,26 @@ impl VidarWindow {
             ("voice intact".to_string(), p.muted)
         };
         painter.text(
-            pos2(r.center().x, r.top() + 37.0),
+            pos2(r.center().x, r.top() + 59.0),
             Align2::CENTER_CENTER,
             verdict,
             FontId::proportional(ty::MICRO),
             vcolor,
         );
+        for (line, y) in [
+            (format!("{:.0} ms", var.delay_ms), 75.0),
+            (cpu_whole_text(var.cpu_percent), 87.0),
+        ] {
+            painter.text(
+                pos2(r.center().x, r.top() + y),
+                Align2::CENTER_CENTER,
+                line,
+                FontId::proportional(ty::MICRO),
+                p.muted,
+            );
+        }
 
-        // Corners: playing / selected on the left, best and in use on the right.
+        // Corners: playing / selected on the left, best on the right.
         play_indicator(
             &painter,
             ui,
@@ -3015,9 +3062,6 @@ impl VidarWindow {
                 p.on_accent,
             );
         }
-        if current {
-            painter.circle_filled(r.right_bottom() + vec2(-10.0, -10.0), 3.5, p.accent);
-        }
 
         if hovered {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -3029,13 +3073,6 @@ impl VidarWindow {
             if best {
                 ui.label(
                     RichText::new("★ Best for you: removes the most noise without making your voice noticeably quieter.")
-                        .size(ty::CAPTION)
-                        .color(p.accent),
-                );
-            }
-            if current {
-                ui.label(
-                    RichText::new("● The mode and strength you use now.")
                         .size(ty::CAPTION)
                         .color(p.accent),
                 );
@@ -3052,52 +3089,118 @@ impl VidarWindow {
                 );
                 ui.label(RichText::new(METRIC_TIPS[1].1).size(ty::CAPTION).color(p.muted));
             }
+            ui.add_space(space::XXS);
+            ui.label(
+                RichText::new(format!("Delay: about {:.0} ms", var.delay_ms)).size(ty::CAPTION),
+            );
+            ui.label(RichText::new(METRIC_TIPS[2].1).size(ty::CAPTION).color(p.muted));
+            ui.add_space(space::XXS);
+            ui.label(
+                RichText::new(format!(
+                    "Processor: {} ({} on this PC's {} logical cores)",
+                    cpu_whole_text(var.cpu_percent),
+                    cpu_text(var.cpu_percent),
+                    cpu_count()
+                ))
+                .size(ty::CAPTION),
+            );
+            ui.label(RichText::new(METRIC_TIPS[3].1).size(ty::CAPTION).color(p.muted));
         });
-        if resp.clicked() && !(selected && playing) {
-            self.choose(track, playing);
+        if resp.clicked() {
+            // Choosing a tile is choosing that mode; it also plays it.
+            if !is_current(&var.option, v) {
+                self.handle.send(Cmd::ApplyOption(i));
+            }
+            if !(selected && playing) {
+                self.choose(track, playing);
+            }
         }
     }
 
-    /// The voice tone card. It sits on the Test tab so a tone can be tried on your recording:
+    /// The voice tone card. It sits on the Sound tab so a tone can be tried on your recording:
     /// changes are heard right away, and they also apply to noise cancellation.
     fn tone_card(&mut self, ui: &mut egui::Ui, p: &Pal, v: &View) {
         card(ui, p, |ui| {
             section_help(ui, p, "Voice tone", TONE_HELP);
-            // Too many choices for one row: one segmented row per TONE_ROW of them.
-            let sel = TONE_PRESETS.iter().position(|(k, _)| *k == v.eq_preset);
-            let labels: Vec<&str> = TONE_PRESETS.iter().map(|(_, l)| *l).collect();
-            for (row, chunk) in labels.chunks(TONE_ROW).enumerate() {
-                let first = row * TONE_ROW;
-                if row > 0 {
-                    ui.add_space(space::XS);
-                }
-                let row_sel = sel
-                    .and_then(|s| s.checked_sub(first))
-                    .filter(|&s| s < chunk.len());
-                let tips = &TONE_TIPS[first..first + chunk.len()];
-                if let Some(i) = segmented(ui, p, chunk, row_sel, true, tips) {
-                    self.handle
-                        .send(Cmd::SetEqPreset(TONE_PRESETS[first + i].0.to_string()));
-                }
+
+            ui.label(
+                RichText::new("Equalizer")
+                    .font(semi(ty::BODY))
+                    .color(p.text),
+            );
+            let chosen = FIX_CHOICES.iter().position(|(k, _, _)| *k == v.mic_fix);
+            let mode = match v.mic_fix.as_str() {
+                "auto" => 0,
+                "off" => 2,
+                _ => 1,
+            };
+            if let Some(i) = segmented(
+                ui,
+                p,
+                &["Automatic", "Choose", "Off"],
+                Some(mode),
+                true,
+                &FIX_TIPS,
+            ) {
+                let fix = match i {
+                    0 => FIX_AUTO.0,
+                    2 => FIX_OFF.0,
+                    _ => FIX_CHOICES[chosen.unwrap_or(self.last_fix)].0,
+                };
+                self.handle.send(Cmd::SetMicFix(fix.to_string()));
+            }
+            if let Some(i) = chosen {
+                self.last_fix = i;
+                ui.add_space(space::XXS);
+                egui::ComboBox::from_id_salt("mic_fix")
+                    .width(ui.available_width())
+                    .selected_text(FIX_CHOICES[i].1)
+                    .show_ui(ui, |ui| {
+                        for (j, (key, name, what)) in FIX_CHOICES.iter().enumerate() {
+                            if ui
+                                .selectable_label(i == j, *name)
+                                .on_hover_text(*what)
+                                .clicked()
+                            {
+                                self.handle.send(Cmd::SetMicFix((*key).to_string()));
+                            }
+                        }
+                    });
+            }
+            let what = match mode {
+                0 => FIX_AUTO.2,
+                2 => FIX_OFF.2,
+                _ => chosen.map_or("", |i| FIX_CHOICES[i].2),
+            };
+            ui.label(RichText::new(what).small().color(p.muted));
+            ui.add_space(space::SM);
+
+            if switch_row(
+                ui,
+                p,
+                "Podcast voice",
+                "Close and even, like a podcast host",
+                v.studio_sound,
+                TIP_PODCAST,
+            ) {
+                self.handle.send(Cmd::SetPodcast(!v.studio_sound));
             }
             ui.add_space(space::SM);
-            let gains = vidar_dsp::eq_preset(&v.eq_preset).unwrap_or(v.eq_custom_db);
-            if let Some((g, done)) = tone_curve(ui, p, gains, v.eq_preset != "off") {
-                self.handle.send(Cmd::SetEqCustom {
-                    gains_db: g,
-                    save: done,
-                });
-            }
+
+            // Your own curve, added on top.
+            let tuned = v.eq_custom_db.iter().any(|&g| g != 0.0);
             ui.horizontal(|ui| {
-                let hint = if v.test.variants.is_empty() {
-                    "Record yourself above to hear each change as you make it"
-                } else {
-                    "Changes are heard right away on the cleaned versions"
+                let label = match (self.curve_open, tuned) {
+                    (true, _) => "Hide fine-tune",
+                    (false, true) => "Fine-tune (changed)",
+                    (false, false) => "Fine-tune",
                 };
-                ui.label(RichText::new(hint).small().color(p.muted));
-                if v.eq_preset == "custom" && v.eq_custom_db.iter().any(|&g| g != 0.0) {
+                if link(ui, p, label).clicked() {
+                    self.curve_open = !self.curve_open;
+                }
+                if tuned {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if link(ui, p, "Flatten curve").clicked() {
+                        if link(ui, p, "Reset fine-tune").clicked() {
                             self.handle.send(Cmd::SetEqCustom {
                                 gains_db: [0.0; vidar_dsp::EQ_BANDS],
                                 save: true,
@@ -3106,6 +3209,23 @@ impl VidarWindow {
                     });
                 }
             });
+            if self.curve_open {
+                ui.add_space(space::XS);
+                if let Some((g, done)) = tone_curve(ui, p, v.eq_custom_db, true) {
+                    self.handle.send(Cmd::SetEqCustom {
+                        gains_db: g,
+                        save: done,
+                    });
+                }
+            }
+            if v.test.variants.is_empty() {
+                ui.add_space(space::XXS);
+                ui.label(
+                    RichText::new("Record yourself above to hear each change as you make it")
+                        .small()
+                        .color(p.muted),
+                );
+            }
         });
     }
 
@@ -3113,116 +3233,180 @@ impl VidarWindow {
 
     /// "How loud apps hear you": a live bar with quiet / good / loud zones and one line of
     /// advice that names the control to change.
-    fn loudness_meter(&mut self, ui: &mut egui::Ui, p: &Pal, v: &View) {
-        const LOW: f32 = -50.0; // left end of the bar, dBFS
-        const QUIET: f32 = -30.0; // speech below this is hard to hear
-        const LOUD: f32 = -12.0; // speech above this sounds harsh
+    /// Returns true when its advice names Boost, Auto level or Microphone level, so the card
+    /// can show those controls.
+    /// Follow the live level apps hear, once per frame. While Vidar is paused (no app
+    /// listening) apps hear nothing, so it is estimated from the raw microphone and the gain
+    /// Vidar would add; noise removal leaves speech at about the same level. Returns `None`
+    /// when noise cancellation is off, else whether the level is such an estimate.
+    fn update_live_level(&mut self, ui: &egui::Ui, v: &View) -> Option<bool> {
         let live = v
             .live
             .as_ref()
             .filter(|_| v.state == RunState::Running)
             .map(|m| m.snapshot());
         let dt = ui.input(|i| i.stable_dt).min(0.1);
-        match live {
-            Some(m) => {
+        // The gain Vidar adds after the model (output gain and Boost), for the estimates.
+        let gain_db = 20.0 * 1.08f64.log10() + v.mic_boost_db;
+        // While a test recording runs it measures the raw microphone itself, whether or not
+        // noise cancellation is on: follow that.
+        let recording = v.test.phase == TestPhase::Recording;
+        let (now, talking, estimated) = if recording {
+            let now = (v.test.level_db + gain_db) as f32;
+            (now, now > -45.0, true)
+        } else if let Some(m) = live {
+            if v.idle {
+                let now = (m.in_rms_db + gain_db) as f32;
+                (now, now > -45.0, true)
+            } else {
                 let now = m.out_rms_db as f32;
-                let tau = if now > self.level_now_db { 0.03 } else { 0.25 };
-                self.level_now_db += (now - self.level_now_db) * (1.0 - (-dt / tau).exp());
-                // Average only while you talk, so pauses do not drag the verdict down.
-                if m.speech_prob > 0.6 && now > -70.0 {
-                    let k = 1.0 - (-dt / 2.0).exp();
-                    self.voice_db = Some(self.voice_db.map_or(now, |d| d + (now - d) * k));
-                    self.voice_secs += dt;
-                }
+                (now, m.speech_prob > 0.6 && now > -70.0, false)
             }
-            None => {
-                self.level_now_db = -100.0;
-                self.voice_db = None;
-                self.voice_secs = 0.0;
-            }
+        } else {
+            self.level_now_db = -100.0;
+            self.voice_db = None;
+            self.voice_secs = 0.0;
+            return None;
+        };
+        let tau = if now > self.level_now_db { 0.03 } else { 0.25 };
+        self.level_now_db += (now - self.level_now_db) * (1.0 - (-dt / tau).exp());
+        // Average only while you talk, so pauses do not drag the verdict down.
+        if talking {
+            let k = 1.0 - (-dt / 2.0).exp();
+            self.voice_db = Some(self.voice_db.map_or(now, |d| d + (now - d) * k));
+            self.voice_secs += dt;
         }
+        Some(estimated)
+    }
 
-        ui.label(RichText::new("How loud apps hear you").color(p.text))
-            .tip(TIP_LEVEL);
-        let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 10.0), Sense::hover());
-        resp.tip(TIP_LEVEL);
-        let x_of = |db: f32| rect.left() + rect.width() * ((db - LOW) / -LOW).clamp(0.0, 1.0);
+    /// The live level as a slim vertical meter beside the waveform: grey, green and red zones
+    /// from the bottom, the level now as a fill, and where your speech usually sits as a tick.
+    fn level_meter_vertical(&mut self, ui: &mut egui::Ui, p: &Pal, v: &View, height: f32) {
+        const LOW: f32 = -50.0;
+        let state = self.update_live_level(ui, v);
+        let (rect, resp) = ui.allocate_exact_size(vec2(10.0, height), Sense::hover());
+        let y_of = |db: f32| rect.bottom() - rect.height() * ((db - LOW) / -LOW).clamp(0.0, 1.0);
         let painter = ui.painter();
         painter.rect_filled(rect, 5.0, p.surface2);
-        let (left_end, right_end) = (
-            CornerRadius {
-                nw: 5,
-                sw: 5,
-                ne: 0,
-                se: 0,
-            },
-            CornerRadius {
-                nw: 0,
-                sw: 0,
-                ne: 5,
-                se: 5,
-            },
-        );
-        for (a, b, c, corners) in [
-            (LOW, QUIET, p.track_idle, left_end),
-            (QUIET, LOUD, p.accent, CornerRadius::ZERO),
-            (LOUD, 0.0, p.danger, right_end),
+        for (a, b, c) in [
+            (LOW, LEVEL_QUIET_DB, p.track_idle),
+            (LEVEL_QUIET_DB, LEVEL_LOUD_DB, p.accent),
+            (LEVEL_LOUD_DB, 0.0, p.danger),
         ] {
-            let r = Rect::from_x_y_ranges(x_of(a)..=x_of(b), rect.y_range());
-            painter.rect_filled(r, corners, c.gamma_multiply(0.22));
+            let r = Rect::from_x_y_ranges(rect.x_range(), y_of(b)..=y_of(a));
+            painter.rect_filled(r, 2.0, c.gamma_multiply(0.22));
         }
-        if live.is_some() && self.level_now_db > LOW {
-            let fill = Rect::from_x_y_ranges(rect.left()..=x_of(self.level_now_db), rect.y_range());
-            let c = if self.level_now_db >= LOUD {
+        if state.is_some() && self.level_now_db > LOW {
+            let c = if self.level_now_db >= LEVEL_LOUD_DB {
                 p.danger
-            } else if self.level_now_db >= QUIET {
+            } else if self.level_now_db >= LEVEL_QUIET_DB {
                 p.accent
             } else {
                 p.track_idle
             };
+            let fill =
+                Rect::from_x_y_ranges(rect.x_range(), y_of(self.level_now_db)..=rect.bottom());
             painter.rect_filled(fill, 5.0, c);
         }
-        if let Some(d) = self.voice_db {
-            // Where your speech usually sits.
-            let x = x_of(d);
+        if let Some(d) = self.voice_db.filter(|_| state.is_some()) {
+            let y = y_of(d);
             painter.line_segment(
-                [pos2(x, rect.top() - 3.0), pos2(x, rect.bottom() + 3.0)],
+                [pos2(rect.left() - 3.0, y), pos2(rect.right() + 3.0, y)],
                 Stroke::new(2.0, p.text),
             );
         }
+        let now = match state {
+            None => "Turn noise cancellation on to see your level live.".to_string(),
+            Some(true) if v.test.phase == TestPhase::Recording => {
+                "Estimated from the recording: the microphone plus the gain Vidar adds.".to_string()
+            }
+            Some(true) => "Estimated while Vidar is paused (no app listening).".to_string(),
+            Some(false) => "Live: what apps hear now.".to_string(),
+        };
+        resp.tip_with(|ui| {
+            tip_ui(ui, TIP_LEVEL);
+            ui.label(RichText::new(now).size(ty::CAPTION).color(p.muted));
+        });
+    }
 
-        let heard = self.voice_db.filter(|_| self.voice_secs >= 2.0);
-        let (text, color) = match (live, heard) {
-            (Some(_), _) if v.idle => (
-                "Paused while no app uses Vidar AI Microphone. Open your call or recorder, then talk.",
+    fn loudness_meter(&mut self, ui: &mut egui::Ui, p: &Pal, v: &View) -> bool {
+        // The level itself is followed by the meter beside the waveform; this is its advice.
+        let running = v.live.is_some() && v.state == RunState::Running;
+        let live = running.then_some(());
+        // Live while an app listens; otherwise from your test recording, if there is one:
+        // the version you hear or use, moved by any Boost change since it was made.
+        // While paused the level is an estimate, but still live.
+        let live_now = live.is_some();
+        let recorded = if live_now {
+            None
+        } else {
+            recorded_level(self.selected, v)
+        };
+        ui.label(RichText::new("How loud apps hear you").color(p.text))
+            .tip(TIP_LEVEL);
+        let heard = if live_now {
+            self.voice_db
+                .filter(|_| self.voice_secs >= 2.0)
+                .map(f64::from)
+        } else {
+            recorded
+        };
+        let from = if live_now && v.idle {
+            "Estimated (no app listening): "
+        } else if live_now {
+            ""
+        } else {
+            "From your recording (colours in the waveform): "
+        };
+        let advice = |d: f64| -> (&'static str, Color32) {
+            if d < f64::from(LEVEL_QUIET_DB) {
+                (
+                    if !v.auto_level {
+                        "a bit quiet. Turn on Auto level below."
+                    } else if v.mic_boost_db < 14.5 {
+                        "still quiet. Raise Boost one step."
+                    } else {
+                        "still quiet. Raise Microphone level below, or move closer."
+                    },
+                    p.warn,
+                )
+            } else if d > f64::from(LEVEL_LOUD_DB) {
+                (
+                    if v.mic_boost_db > 0.5 {
+                        "too loud. Lower Boost one step."
+                    } else {
+                        "too loud. Lower Microphone level below, or move back a little."
+                    },
+                    p.danger,
+                )
+            } else {
+                ("good level. Nothing to change.", p.accent)
+            }
+        };
+        let (text, color) = match heard {
+            Some(d) => {
+                let (a, c) = advice(d);
+                let line = if from.is_empty() {
+                    let mut t = a.to_string();
+                    t[..1].make_ascii_uppercase();
+                    t
+                } else {
+                    format!("{from}{a}")
+                };
+                (line, c)
+            }
+            None if live_now => ("Talk normally for a few seconds...".to_string(), p.muted),
+            None if live.is_some() => (
+                "Paused while no app uses Vidar AI Microphone. Open your call or recorder and talk, or record yourself above.".to_string(),
                 p.muted,
             ),
-            (None, _) => (
-                "Turn noise cancellation on and talk to see your level.",
+            None => (
+                "Record yourself above, or turn noise cancellation on and talk, to see your level.".to_string(),
                 p.muted,
             ),
-            (Some(_), None) => ("Talk normally for a few seconds...", p.muted),
-            (Some(_), Some(d)) if d < QUIET => (
-                if !v.auto_level {
-                    "A bit quiet. Turn on Auto level below."
-                } else if v.mic_boost_db < 14.5 {
-                    "Still quiet. Raise Boost one step."
-                } else {
-                    "Still quiet. Raise Microphone level below, or move closer."
-                },
-                p.warn,
-            ),
-            (Some(_), Some(d)) if d > LOUD => (
-                if v.mic_boost_db > 0.5 {
-                    "Too loud. Lower Boost one step."
-                } else {
-                    "Too loud. Lower Microphone level below, or move back a little."
-                },
-                p.danger,
-            ),
-            (Some(_), Some(_)) => ("Good level. Nothing to change.", p.accent),
         };
         ui.label(RichText::new(text).small().color(color));
+        matches!(heard, Some(d) if d < f64::from(LEVEL_QUIET_DB) || d > f64::from(LEVEL_LOUD_DB))
     }
 
     /// The microphone's own volume in Windows ("Input volume" in Sound settings), with a
@@ -3302,70 +3486,83 @@ impl VidarWindow {
         }
     }
 
-    /// The strength slider without numbers: what each end means, where the presets sit, and
-    /// the name of the current position.
-    fn fine_strength(&mut self, ui: &mut egui::Ui, p: &Pal, v: &View) {
-        const PRESETS: [(&str, f32); 3] = [("Gentle", 0.55), ("Balanced", 0.70), ("Strong", 0.82)];
-        const MIN: f32 = 0.40;
-        const MAX: f32 = 0.90;
-        if !self.fine_drag {
-            self.fine = v.vad_threshold as f32;
-        }
-        let f = self.fine;
-        let now = match PRESETS.iter().find(|(_, x)| (f - x).abs() < 0.015) {
-            Some((name, _)) => (*name).to_string(),
-            None if f < PRESETS[0].1 => "Gentler than Gentle".to_string(),
-            None if f > PRESETS[2].1 => "Stronger than Strong".to_string(),
-            None => {
-                let i = PRESETS.iter().rposition(|(_, x)| *x < f).unwrap_or(0);
-                format!("Between {} and {}", PRESETS[i].0, PRESETS[i + 1].0)
-            }
-        };
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("Fine-tune strength").color(p.text))
-                .tip(TIP_FINE);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(RichText::new(now).font(semi(ty::BODY)).color(p.text));
-            });
-        });
-        let r = styled_slider(ui, p, &mut self.fine, MIN..=MAX);
+    /// The microphone's own settings: what apps hear, its level, Boost and Auto level. On
+    /// the Sound tab, under the recording, so a change can be checked by ear.
+    fn microphone_card(&mut self, ui: &mut egui::Ui, p: &Pal, v: &View) {
+        card(ui, p, |ui| {
+            section_help(ui, p, "Microphone", TIP_MIC_CARD);
+            // When the meter's advice names one of the folded controls, show them.
+            let advised = self.loudness_meter(ui, p, v);
+            ui.add_space(space::XS);
 
-        // Preset marks under the track, where the handle sits for each preset.
-        let pad = r.rect.height() / 2.5;
-        let (l, w) = (r.rect.left() + pad, r.rect.width() - 2.0 * pad);
-        let x_of = |x: f32| l + w * (x - MIN) / (MAX - MIN);
-        let (marks, _) = ui.allocate_exact_size(vec2(ui.available_width(), 14.0), Sense::hover());
-        for (name, x) in PRESETS {
-            let px = x_of(x);
-            ui.painter().line_segment(
-                [pos2(px, marks.top()), pos2(px, marks.top() + 3.0)],
-                Stroke::new(1.0, p.muted),
-            );
-            ui.painter().text(
-                pos2(px, marks.top() + 3.0),
-                Align2::CENTER_TOP,
-                name,
-                FontId::proportional(ty::MICRO),
-                p.muted,
-            );
-        }
-        ui.add_space(space::XS);
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("Keeps every word").small().color(p.muted));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(RichText::new("Keeps out more noise").small().color(p.muted));
-            });
+            // Level, Boost and Auto level: needed only when the meter says so.
+            let mut changed = Vec::new();
+            if v.mic_boost_db.abs() >= 0.5 {
+                changed.push(format!("Boost +{:.0} dB", v.mic_boost_db));
+            }
+            if v.auto_level {
+                changed.push("Auto level on".to_string());
+            }
+            let label = if self.mic_more {
+                "Fewer microphone options".to_string()
+            } else if changed.is_empty() {
+                "More microphone options".to_string()
+            } else {
+                format!("More microphone options ({})", changed.join(", "))
+            };
+            if !advised && link(ui, p, &label).clicked() {
+                self.mic_more = !self.mic_more;
+            }
+            if self.mic_more || advised {
+                ui.add_space(space::XS);
+                self.mic_level(ui, p, v);
+                ui.add_space(space::SM);
+                section_help(ui, p, "Boost", BOOST_HELP);
+                let boosts = [0.0, 5.0, 10.0, 15.0];
+                let sel = boosts.iter().position(|b| (b - v.mic_boost_db).abs() < 0.5);
+                if let Some(i) = segmented(
+                    ui,
+                    p,
+                    &["Off", "+5 dB", "+10 dB", "+15 dB"],
+                    sel,
+                    true,
+                    &BOOST_TIPS,
+                ) {
+                    self.handle.send(Cmd::SetBoost(boosts[i]));
+                }
+                ui.add_space(space::XS);
+                if switch_row(
+                    ui,
+                    p,
+                    "Auto level",
+                    "Too quiet? Try this before Boost",
+                    v.auto_level,
+                    TIP_AUTO_LEVEL,
+                ) {
+                    self.handle.send(Cmd::SetAutoLevel(!v.auto_level));
+                }
+            }
+
+            let recommended = v.mic_boost_db.abs() < 0.5
+                && !v.auto_level
+                && (v.vad_threshold - 0.70).abs() < 0.005;
+            if !recommended {
+                ui.add_space(space::XXS);
+                if link(ui, p, "Reset to recommended").tip(TIP_RESET).clicked() {
+                    self.handle.send(Cmd::SetBoost(0.0));
+                    if v.auto_level {
+                        self.handle.send(Cmd::SetAutoLevel(false));
+                    }
+                    self.handle.send(Cmd::SetVad(0.70));
+                }
+            }
         });
-        let r = r.tip(TIP_FINE);
-        self.fine_drag = r.dragged();
-        if r.changed() {
-            self.handle.send(Cmd::SetVad(f64::from(self.fine)));
-        }
     }
 
     fn settings(&mut self, ui: &mut egui::Ui, p: &Pal, v: &View) {
         card(ui, p, |ui| {
-            section(ui, p, "Appearance");
+            section(ui, p, "General");
+            ui.label(RichText::new("Appearance").color(p.text));
             let idx = match self.theme.as_str() {
                 "light" => 1,
                 "dark" => 2,
@@ -3384,92 +3581,7 @@ impl VidarWindow {
                 self.theme = t.clone();
                 self.handle.send(Cmd::SetTheme(t));
             }
-        });
-        ui.add_space(space::SM);
-
-        card(ui, p, |ui| {
-            section(ui, p, "Microphone");
-            ui.label(
-                RichText::new(
-                    "Most people never need to change these. Talk and watch the meter: change something only if it says so. Mode, strength, Boost and Auto level are remembered for each microphone.",
-                )
-                .small()
-                .color(p.muted),
-            );
-            ui.add_space(space::XXS);
-            self.loudness_meter(ui, p, v);
             ui.add_space(space::SM);
-            self.mic_level(ui, p, v);
-            ui.add_space(space::SM);
-
-            section_help(ui, p, "Boost", BOOST_HELP);
-            let boosts = [0.0, 5.0, 10.0, 15.0];
-            let sel = boosts.iter().position(|b| (b - v.mic_boost_db).abs() < 0.5);
-            if let Some(i) = segmented(
-                ui,
-                p,
-                &["Off", "+5 dB", "+10 dB", "+15 dB"],
-                sel,
-                true,
-                &BOOST_TIPS,
-            ) {
-                self.handle.send(Cmd::SetBoost(boosts[i]));
-            }
-            ui.add_space(space::XS);
-            if switch_row(
-                ui,
-                p,
-                "Auto level",
-                "Too quiet? Try this before Boost",
-                v.auto_level,
-                TIP_AUTO_LEVEL,
-            ) {
-                self.handle.send(Cmd::SetAutoLevel(!v.auto_level));
-            }
-            ui.add_space(space::XS);
-            self.fine_strength(ui, p, v);
-
-            let recommended = v.mic_boost_db.abs() < 0.5
-                && !v.auto_level
-                && (v.vad_threshold - 0.70).abs() < 0.005;
-            if !recommended {
-                ui.add_space(space::XXS);
-                if link(ui, p, "Reset to recommended").tip(TIP_RESET).clicked() {
-                    self.handle.send(Cmd::SetBoost(0.0));
-                    if v.auto_level {
-                        self.handle.send(Cmd::SetAutoLevel(false));
-                    }
-                    self.handle.send(Cmd::SetVad(0.70));
-                }
-            }
-        });
-        ui.add_space(space::SM);
-
-        card(ui, p, |ui| {
-            section_help(ui, p, "Voice tone", TONE_HELP);
-            ui.horizontal(|ui| {
-                let name = TONE_PRESETS
-                    .iter()
-                    .find(|(k, _)| *k == v.eq_preset)
-                    .map_or("Off", |(_, l)| *l);
-                ui.label(RichText::new(name).font(semi(ty::BODY)).color(p.text));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if secondary(ui, p, "Tune on Test")
-                        .tip((
-                            "Tune on Test",
-                            "Voice tone lives on the Test tab, next to your recording, so you hear each change while you make it.",
-                        ))
-                        .clicked()
-                    {
-                        self.tab = Tab::Test;
-                    }
-                });
-            });
-        });
-        ui.add_space(space::SM);
-
-        card(ui, p, |ui| {
-            section(ui, p, "Apps and Windows");
             if switch_row(
                 ui,
                 p,
@@ -3481,7 +3593,15 @@ impl VidarWindow {
                 self.handle
                     .send(Cmd::SetStartWithWindows(!v.start_with_windows));
             }
-            ui.add_space(space::XS);
+            ui.add_space(space::XXS);
+            if link(ui, p, "How to use Vidar in a specific app").clicked() {
+                self.show_help = true;
+            }
+        });
+        ui.add_space(space::SM);
+
+        card(ui, p, |ui| {
+            section(ui, p, "Performance");
             if switch_row(
                 ui,
                 p,
@@ -3507,15 +3627,8 @@ impl VidarWindow {
             ) {
                 self.handle.send(Cmd::SetCpuFallback(LIMITS[i].into()));
             }
-            ui.add_space(space::XXS);
-            if link(ui, p, "How to use Vidar in a specific app").clicked() {
-                self.show_help = true;
-            }
         });
         ui.add_space(space::SM);
-
-        self.updates_card(ui, p, v);
-        ui.add_space(8.0);
 
         card(ui, p, |ui| {
             section_help(ui, p, "Virtual microphone", TIP_INSTALL);
@@ -3585,7 +3698,7 @@ impl VidarWindow {
         });
     }
 
-    fn about(&mut self, ui: &mut egui::Ui, p: &Pal) {
+    fn about(&mut self, ui: &mut egui::Ui, p: &Pal, v: &View) {
         // Header: the logo in its "on" colours, the name and the version.
         ui.add_space(space::SM);
         ui.vertical_centered(|ui| {
@@ -3604,6 +3717,9 @@ impl VidarWindow {
             ui.label(RichText::new("AI noise cancellation for your microphone").color(p.muted));
         });
         ui.add_space(space::LG);
+
+        self.updates_card(ui, p, v);
+        ui.add_space(space::SM);
 
         // VB-Audio's distribution terms ask that users can identify VB-CABLE, see where it comes
         // from and that it is donationware: https://vb-audio.com/Services/licensing.htm
@@ -3913,8 +4029,8 @@ impl eframe::App for VidarWindow {
         // Only the Home tab animates with the live voice (the logo and the ring); other tabs and
         // a minimised window repaint on changes alone.
         let minimized = ctx.input(|i| i.viewport().minimized.unwrap_or(false));
-        // Settings shows the live loudness meter, so it animates too.
-        if matches!(self.tab, Tab::Home | Tab::Settings)
+        // The Sound tab shows the live loudness meter, so it animates too.
+        if matches!(self.tab, Tab::Home | Tab::Test)
             && !minimized
             && self.handle.view().state == RunState::Running
         {
@@ -3944,7 +4060,7 @@ impl eframe::App for VidarWindow {
                             Tab::Home => self.home(ui, &p, &v),
                             Tab::Test => self.test_list(ui, &p, &v),
                             Tab::Settings => self.settings(ui, &p, &v),
-                            Tab::About => self.about(ui, &p),
+                            Tab::About => self.about(ui, &p, &v),
                         }
                         ui.add_space(space::SM);
                     });
@@ -4005,7 +4121,7 @@ pub fn run_window(
 // ------------------------------------------------------------ Updates
 // One block: the Home notice and the Settings card.
 
-const TIP_UPDATES: Tip = ("Check for updates", "About once a day Vidar asks GitHub for the latest version number. No personal data is sent. Installed copies can update themselves; the portable zip opens the download page.");
+const TIP_UPDATES: Tip = ("Check for updates", "When it starts and every 8 hours after that, Vidar asks GitHub for the latest version number. No personal data is sent. Installed copies can update themselves; the portable zip opens the download page.");
 
 impl VidarWindow {
     /// Home: a short notice while a newer version is available.
@@ -4067,22 +4183,22 @@ impl VidarWindow {
                 ui,
                 p,
                 "Check for updates",
-                "About once a day, from GitHub",
+                "When Vidar starts and every 8 hours, from GitHub",
                 v.update.enabled,
                 TIP_UPDATES,
             ) {
                 self.handle.send(Cmd::SetCheckUpdates(!v.update.enabled));
             }
             ui.add_space(4.0);
-            let current = env!("CARGO_PKG_VERSION");
+            // The version itself is in the About header, right above this card.
             ui.horizontal(|ui| {
                 let (text, color) = match (&v.update.available, v.update.phase) {
                     (_, UpdatePhase::Checking) => ("Checking...".to_string(), p.muted),
                     (Some((ver, _)), _) => (format!("Vidar {ver} is available"), p.accent),
                     (None, _) if v.update.up_to_date => {
-                        (format!("You have the latest version ({current})"), p.text)
+                        ("You have the latest version".to_string(), p.text)
                     }
-                    (None, _) => (format!("Version {current}"), p.muted),
+                    (None, _) => ("Not checked yet".to_string(), p.muted),
                 };
                 ui.label(RichText::new(text).color(color));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -4115,25 +4231,20 @@ fn update_error(ui: &mut egui::Ui, p: &Pal, v: &View) {
 mod tests {
     use super::*;
 
-    /// Every tone button names a real preset (or "custom"), every preset has a button, and
-    /// the labels, tooltips and rows line up.
+    /// Every equalizer choice names a real preset, every preset is offered (Broadcast through
+    /// Podcast voice), and the list matches the settings file's.
     #[test]
-    fn tone_buttons_match_the_presets() {
-        for (key, _) in TONE_PRESETS {
-            assert!(
-                key == "custom" || vidar_dsp::eq_preset(key).is_some(),
-                "button {key} has no preset"
-            );
+    fn equalizer_choices_cover_the_presets() {
+        let fixes: Vec<&str> = FIX_CHOICES.iter().map(|c| c.0).collect();
+        assert_eq!(fixes, vidar_config::MIC_FIXES);
+        for key in &fixes {
+            assert!(vidar_dsp::eq_preset(key).is_some(), "{key} has no preset");
         }
         for (key, _) in vidar_dsp::EQ_PRESETS {
             assert!(
-                TONE_PRESETS.iter().any(|(k, _)| *k == key),
-                "preset {key} has no button"
+                matches!(key, "off" | "broadcast") || fixes.contains(&key),
+                "preset {key} is offered nowhere"
             );
         }
-        for ((_, label), (tip, _)) in TONE_PRESETS.iter().zip(TONE_TIPS) {
-            assert_eq!(*label, tip, "tooltip order");
-        }
-        assert_eq!(TONE_PRESETS.len() % TONE_ROW, 0, "rows are full");
     }
 }
