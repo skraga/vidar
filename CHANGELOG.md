@@ -5,6 +5,12 @@ messages by [git-cliff](https://git-cliff.org) when a release is prepared
 (`cargo xtask release <version>`), and each one is published as that version's GitHub
 release notes.
 
+## 0.4.1 — 2026-11-22
+
+### Fixed
+
+- Downloads are named amd64 and arm64, and a release is published only once all its files are uploaded
+
 ## 0.4.0 — 2026-11-22
 
 ### New
