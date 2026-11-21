@@ -1,7 +1,7 @@
 //! `cargo xtask <task>` (alias in .cargo/config.toml).
 //!
-//!   fetch         RNNoise weights + default DPDFNet model, hash-checked
-//!   fetch --all   also the larger dpdfnet8 model
+//!   fetch         RNNoise weights, ONNX Runtime and both DPDFNet models (Voice HD and
+//!                 Voice HD+), hash-checked
 //!   dist          release build + everything it needs, licences included, in dist\vidar
 //!   installer     dist, then the setup (Inno Setup 6) and its .sha256, for this machine's
 //!                 architecture (x64 or arm64)
@@ -157,21 +157,19 @@ fn fetch_onnxruntime() -> Result<()> {
     Ok(())
 }
 
-fn fetch_dpdfnet(all: bool) -> Result<()> {
+/// Both DPDFNet models: `dpdfnet2_48khz_hr` (Voice HD) and `dpdfnet8_48khz_hr` (Voice HD+).
+fn fetch_dpdfnet() -> Result<()> {
     let dir = models_dir();
     fs::create_dir_all(&dir)?;
-    for (i, (name, expected)) in DPDFNET_MODELS.iter().enumerate() {
-        if i > 0 && !all {
-            continue;
-        }
+    for (name, expected) in DPDFNET_MODELS {
         let target = dir.join(format!("{name}.onnx"));
-        if target.is_file() && sha256_hex(&fs::read(&target)?) == *expected {
+        if target.is_file() && sha256_hex(&fs::read(&target)?) == expected {
             println!("[OK] {name}.onnx already present");
             continue;
         }
         let body = download(&format!("{DPDFNET_BASE}/{name}.onnx?download=true"))?;
         let actual = sha256_hex(&body);
-        if actual != *expected {
+        if actual != expected {
             return Err(format!("{name}.onnx checksum mismatch: {actual} != {expected}").into());
         }
         let tmp = target.with_extension("part");
@@ -211,11 +209,11 @@ fn copy_dir(src: &Path, dst: &Path) -> Result<()> {
 ///
 /// Every licence file is required: a missing one fails the build instead of shipping without it.
 /// Needs cargo-about (`cargo install cargo-about --locked`).
-fn dist(all_models: bool) -> Result<()> {
+fn dist() -> Result<()> {
     let root = workspace_root();
     fetch_rnnoise()?;
     fetch_onnxruntime()?;
-    fetch_dpdfnet(all_models)?;
+    fetch_dpdfnet()?;
 
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
 
@@ -323,10 +321,7 @@ fn dist(all_models: bool) -> Result<()> {
         out.join("licenses").join("THIRD_PARTY_LICENSES.html"),
         crate_licenses,
     )?;
-    for (i, (name, _)) in DPDFNET_MODELS.iter().enumerate() {
-        if i > 0 && !all_models {
-            continue;
-        }
+    for (name, _) in DPDFNET_MODELS {
         let model = format!("{name}.onnx");
         fs::copy(models_dir().join(&model), out.join("models").join(&model))?;
     }
@@ -385,8 +380,8 @@ fn iscc() -> PathBuf {
 /// `dist\vidar-<version>-x64-setup.exe` or `dist\vidar-<version>-arm64-setup.exe`, plus
 /// `<that>.sha256`, which the app's updater checks.
 /// Needs Inno Setup 6 (`winget install JRSoftware.InnoSetup`).
-fn installer(all_models: bool) -> Result<()> {
-    dist(all_models)?;
+fn installer() -> Result<()> {
+    dist()?;
     let root = workspace_root();
     let version = workspace_version()?;
     let out = root.join("dist");
@@ -774,16 +769,15 @@ fn outdated() -> Result<bool> {
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let all = args.iter().any(|a| a == "--all");
     match args.first().map(String::as_str) {
         Some("fetch") => {
             fetch_rnnoise()?;
             fetch_onnxruntime()?;
-            fetch_dpdfnet(all)?;
+            fetch_dpdfnet()?;
             Ok(())
         }
-        Some("dist") => dist(all),
-        Some("installer") => installer(all),
+        Some("dist") => dist(),
+        Some("installer") => installer(),
         Some("changelog") => changelog_preview(),
         Some("release") => match args.get(1) {
             Some(v) => release(v.trim_start_matches('v')),
@@ -797,7 +791,7 @@ fn main() -> Result<()> {
         }
         _ => {
             eprintln!(
-                "usage: cargo xtask fetch [--all] | dist [--all] | installer [--all] | outdated \
+                "usage: cargo xtask fetch | dist | installer | outdated \
                  | changelog | release <version>"
             );
             std::process::exit(2);
